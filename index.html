@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en" class="h-full w-full select-none overflow-hidden bg-stone-950">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+    />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <title>Abyssal Depths — 3D Prototype 01</title>
+    <meta
+      name="description"
+      content="A standalone, playable 3D isometric dungeon crawler prototype featuring procedural models, atmospheric lighting, responsive mobile controls, and action RPG combat."
+    />
+    <meta property="og:title" content="Abyssal Depths — 3D Prototype 01" />
+    <meta
+      property="og:description"
+      content="A standalone, playable 3D isometric dungeon crawler prototype featuring procedural models, atmospheric lighting, responsive mobile controls, and action RPG combat."
+    />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <style>
+      /* Prevent iOS bounce, pinch-zoom, and accidental gesture navigation */
+      html, body, #root {
+        height: 100%;
+        width: 100%;
+        margin: 0;
+        padding: 0;
+        overflow: hidden;
+        user-select: none;
+        -webkit-user-select: none;
+        touch-action: none;
+        -webkit-touch-callout: none;
+        background-color: #0c0a09;
+      }
+    </style>
+  </head>
+  <body class="h-full w-full bg-stone-950 text-stone-100 antialiased">
+    <div id="root" class="h-full w-full overflow-hidden"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

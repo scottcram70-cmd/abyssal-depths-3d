@@ -1,0 +1,8 @@
+{
+  "name": "Abyssal Depths — 3D Prototype 01",
+  "description": "A standalone, playable 3D isometric dungeon crawler prototype featuring procedural models, atmospheric lighting, responsive mobile controls, and action RPG combat.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

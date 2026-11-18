@@ -1,5 +1,6 @@
 import React from 'react';
 import {
+  Coins,
   Compass,
   Heart,
   KeyRound,
@@ -18,6 +19,7 @@ interface HeroPanelProps {
   playerMagic: number;
   playerMaxMagic: number;
   healingPotions: number;
+  gold: number;
   playerXp: number;
   playerLevel: number;
   currentRoom: RoomId;
@@ -41,6 +43,7 @@ export const HeroPanel: React.FC<HeroPanelProps> = ({
   playerMagic,
   playerMaxMagic,
   healingPotions,
+  gold,
   playerXp,
   playerLevel,
   currentRoom,
@@ -204,6 +207,16 @@ export const HeroPanel: React.FC<HeroPanelProps> = ({
 
               <div className="rounded-lg border border-stone-800 bg-stone-950/75 px-2.5 py-2">
                 <div className="text-[10px] uppercase tracking-wider text-stone-400">
+                  Gold
+                </div>
+                <div className="mt-0.5 flex items-center gap-1.5 font-bold tabular-nums text-amber-300">
+                  <Coins className="h-3.5 w-3.5 text-amber-400" />
+                  <span>{gold}</span>
+                </div>
+              </div>
+
+              <div className="rounded-lg border border-stone-800 bg-stone-950/75 px-2.5 py-2">
+                <div className="text-[10px] uppercase tracking-wider text-stone-400">
                   Healing Potions
                 </div>
                 <div className="mt-0.5 flex items-center gap-1.5 font-bold tabular-nums text-red-300">
@@ -224,7 +237,7 @@ export const HeroPanel: React.FC<HeroPanelProps> = ({
                 </div>
               </div>
 
-              <div className="rounded-lg border border-stone-800 bg-stone-950/75 px-2.5 py-2">
+              <div className="col-span-2 rounded-lg border border-stone-800 bg-stone-950/75 px-2.5 py-2">
                 <div className="text-[10px] uppercase tracking-wider text-stone-400">
                   Current Room
                 </div>

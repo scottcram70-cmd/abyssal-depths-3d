@@ -843,10 +843,10 @@ export const INITIAL_ENEMY_SPAWNS: EnemySpawnConfig[] = [
     roomId: 1,
     name: 'Crypt Skeleton',
     variant: 'warrior',
-    position: [0, -2.2],
+    position: [0, -2.8],
     maxHealth: 100,
     speed: 2.65,
-    detectRange: 7.4,
+    detectRange: 4.8,
     attackRange: 1.85,
     damageMin: 11,
     damageMax: 15,
@@ -1211,4 +1211,46 @@ export function resolveMovementCollision(
 
   // Clamp inside continuous room + corridor walkable geometry
   return clampToWalkableUnion(rx, rz, actorRadius, unlockedGates);
+}
+
+/**
+ * Checks whether the straight segment between two positions stays strictly inside
+ * open walkable room/corridor rectangles (i.e. not blocked by dungeon walls or closed gates).
+ */
+export function hasLineOfSight(
+  x1: number,
+  z1: number,
+  x2: number,
+  z2: number,
+  unlockedGates: GateUnlockState
+): boolean {
+  const dist = Math.hypot(x2 - x1, z2 - z1);
+  const steps = Math.max(1, Math.ceil(dist / 0.25));
+
+  for (let s = 0; s <= steps; s++) {
+    const t = s / steps;
+    const px = x1 + (x2 - x1) * t;
+    const pz = z1 + (z2 - z1) * t;
+
+    let insideWalkable = false;
+    for (let i = 0; i < WALKABLE_RECTS.length; i++) {
+      const rect = WALKABLE_RECTS[i];
+      if (!isGateOpen(rect.requiresGate, unlockedGates)) continue;
+      if (
+        px >= rect.minX &&
+        px <= rect.maxX &&
+        pz >= rect.minZ &&
+        pz <= rect.maxZ
+      ) {
+        insideWalkable = true;
+        break;
+      }
+    }
+
+    if (!insideWalkable) {
+      return false;
+    }
+  }
+
+  return true;
 }

@@ -16,6 +16,7 @@ import {
   Flag,
   Pause,
   Play,
+  Coins,
 } from 'lucide-react';
 import { VirtualJoystick } from './VirtualJoystick';
 import { DungeonMiniMap } from './DungeonMiniMap';
@@ -28,6 +29,7 @@ interface GameHUDProps {
   playerMagic: number;
   playerMaxMagic: number;
   healingPotions: number;
+  gold: number;
   inCombat: boolean;
   isHealthRegenerating: boolean;
   isMagicRegenerating: boolean;
@@ -49,6 +51,8 @@ interface GameHUDProps {
   portalActive: boolean;
   showHealthRestored: boolean;
   showPotionPickedUp: boolean;
+  showGoldPickedUp: boolean;
+  lastGoldPickedUp: number;
   showLevelUp: boolean;
   levelUpLevel: number;
   checkpointRoom: RoomId | null;
@@ -68,6 +72,7 @@ interface GameHUDProps {
   onHeal: () => void;
   onPause: () => void;
   onResume: () => void;
+  onReturnToTitle?: () => void;
   onContinueFromCheckpoint: () => void;
   onRestart: () => void;
   onToggleMute: () => void;
@@ -80,6 +85,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({
   playerMagic,
   playerMaxMagic,
   healingPotions,
+  gold,
   inCombat,
   isHealthRegenerating,
   isMagicRegenerating,
@@ -101,6 +107,8 @@ export const GameHUD: React.FC<GameHUDProps> = ({
   portalActive,
   showHealthRestored,
   showPotionPickedUp,
+  showGoldPickedUp,
+  lastGoldPickedUp,
   showLevelUp,
   levelUpLevel,
   checkpointRoom,
@@ -120,6 +128,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({
   onHeal,
   onPause,
   onResume,
+  onReturnToTitle,
   onContinueFromCheckpoint,
   onRestart,
   onToggleMute,
@@ -268,6 +277,25 @@ export const GameHUD: React.FC<GameHUDProps> = ({
                 <KeyRound className="h-4 w-4 shrink-0" />
                 <span className="hidden sm:inline">{hasKey ? 'Key' : '0/1'}</span>
               </div>
+
+              {/* Desktop Gold Counter */}
+              <div
+                aria-label={`Gold: ${gold}`}
+                className="pointer-events-auto hidden sm:flex h-11 items-center gap-1.5 rounded-xl border border-amber-500/60 bg-stone-950/88 px-2.5 text-xs font-bold uppercase tracking-wider text-amber-300 shadow-lg"
+              >
+                <Coins className="h-4 w-4 shrink-0 text-amber-400" />
+                <span className="tabular-nums">{gold}</span>
+              </div>
+            </div>
+
+            {/* Mobile Portrait Gold Counter (cleanly stacked below Knight card without crowding Mute/Restart) */}
+            <div
+              aria-label={`Gold: ${gold}`}
+              className="pointer-events-auto inline-flex sm:hidden items-center gap-1.5 rounded-lg border border-amber-500/55 bg-stone-950/88 px-2.5 py-1 text-[11px] font-bold uppercase tracking-wider text-amber-300 shadow-md"
+            >
+              <Coins className="h-3.5 w-3.5 shrink-0 text-amber-400" />
+              <span className="tabular-nums">{gold}</span>
+              <span className="text-[10px] text-amber-400/85">Gold</span>
             </div>
 
             {/* Active Enemy HP Bar (stacked cleanly on mobile portrait so upper-right mini-map never collides) */}
@@ -313,6 +341,13 @@ export const GameHUD: React.FC<GameHUDProps> = ({
                 <div className="inline-flex items-center gap-1.5 rounded-lg border border-rose-400/75 bg-stone-950/92 px-2.5 py-1 text-[11px] font-bold uppercase tracking-wider text-rose-200 shadow-lg">
                   <Heart className="h-3.5 w-3.5 fill-rose-500 text-rose-300" />
                   <span>Healing Potion +1 ({healingPotions})</span>
+                </div>
+              )}
+
+              {showGoldPickedUp && lastGoldPickedUp > 0 && (
+                <div className="inline-flex items-center gap-1.5 rounded-lg border border-amber-400/80 bg-stone-950/92 px-2.5 py-1 text-[11px] font-bold uppercase tracking-wider text-amber-200 shadow-lg">
+                  <Coins className="h-3.5 w-3.5 text-amber-400" />
+                  <span>+{lastGoldPickedUp} Gold</span>
                 </div>
               )}
 
@@ -467,6 +502,13 @@ export const GameHUD: React.FC<GameHUDProps> = ({
             </div>
           )}
 
+          {showGoldPickedUp && lastGoldPickedUp > 0 && (
+            <div className="inline-flex items-center gap-1.5 rounded-lg border border-amber-400/80 bg-stone-950/92 px-3 py-1 text-sm font-bold uppercase tracking-wider text-amber-200 shadow-lg">
+              <Coins className="h-3.5 w-3.5 text-amber-400" />
+              <span>+{lastGoldPickedUp} Gold</span>
+            </div>
+          )}
+
           {showLevelUp && (
             <div className="inline-flex items-center gap-2 rounded-lg border border-amber-400/85 bg-gradient-to-r from-amber-950/95 via-stone-950/95 to-amber-950/95 px-3.5 py-1 text-sm font-black uppercase tracking-wider text-amber-200 shadow-[0_0_20px_rgba(251,191,36,0.4)]">
               <Sparkles className="h-4 w-4 text-amber-300" />
@@ -567,6 +609,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({
           playerMagic={playerMagic}
           playerMaxMagic={playerMaxMagic}
           healingPotions={healingPotions}
+          gold={gold}
           playerXp={playerXp}
           playerLevel={playerLevel}
           currentRoom={currentRoom}
@@ -615,7 +658,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({
               </p>
             )}
 
-            <div className="mt-4 grid grid-cols-3 gap-2 rounded-xl border border-stone-800 bg-stone-900/80 px-3 py-2 text-xs">
+            <div className="mt-4 grid grid-cols-4 gap-2 rounded-xl border border-stone-800 bg-stone-900/80 px-2.5 py-2 text-xs">
               <div>
                 <div className="text-[10px] font-bold uppercase text-stone-400">HP</div>
                 <div className="font-black tabular-nums text-emerald-300">
@@ -632,6 +675,12 @@ export const GameHUD: React.FC<GameHUDProps> = ({
                 <div className="text-[10px] font-bold uppercase text-stone-400">Potions</div>
                 <div className="font-black tabular-nums text-rose-300">
                   {healingPotions}
+                </div>
+              </div>
+              <div>
+                <div className="text-[10px] font-bold uppercase text-stone-400">Gold</div>
+                <div className="font-black tabular-nums text-amber-300">
+                  {gold}
                 </div>
               </div>
             </div>
@@ -658,6 +707,30 @@ export const GameHUD: React.FC<GameHUDProps> = ({
               <Play className="h-5 w-5 fill-current" />
               Resume
             </button>
+
+            {onReturnToTitle && (
+              <button
+                type="button"
+                onPointerDown={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  onInteract();
+                  onReturnToTitle();
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    onInteract();
+                    onReturnToTitle();
+                  }
+                }}
+                style={{ touchAction: 'none' }}
+                className="mt-2.5 inline-flex w-full items-center justify-center rounded-xl border border-stone-700/90 bg-stone-900/90 px-4 py-2.5 text-xs font-bold uppercase tracking-wider text-stone-300 hover:border-amber-600/60 hover:text-amber-200 active:scale-95 transition"
+              >
+                Title Screen
+              </button>
+            )}
           </div>
         </div>
       )}

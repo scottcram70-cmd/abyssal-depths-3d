@@ -16,6 +16,7 @@ import {
   SANCTUM_GATE_POSITION,
   WARDEN_GATE_POSITION,
 } from '../utils/obstacles';
+import { LootDropItem } from '../types/game';
 
 interface TorchProps {
   position: [number, number, number];
@@ -473,6 +474,70 @@ const HealingPotion: React.FC<{
   );
 };
 
+const GoldCoinPickup: React.FC<{
+  position: [number, number, number];
+}> = ({ position }) => {
+  const coinRef = useRef<THREE.Group>(null);
+  const ringRef = useRef<THREE.Mesh>(null);
+
+  useFrame(({ clock }, delta) => {
+    const t = clock.getElapsedTime();
+    if (coinRef.current) {
+      coinRef.current.rotation.y += delta * 2.4;
+      coinRef.current.position.y = 0.42 + Math.sin(t * 3.4) * 0.08;
+    }
+    if (ringRef.current) {
+      ringRef.current.rotation.z -= delta * 1.4;
+    }
+  });
+
+  return (
+    <group position={position}>
+      <mesh ref={ringRef} position={[0, 0.03, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+        <ringGeometry args={[0.25, 0.41, 18]} />
+        <meshBasicMaterial color={0xfbbf24} transparent opacity={0.82} depthWrite={false} />
+      </mesh>
+      <mesh position={[0, 0.024, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+        <circleGeometry args={[0.25, 14]} />
+        <meshBasicMaterial color={0x92400e} transparent opacity={0.48} depthWrite={false} />
+      </mesh>
+
+      <group ref={coinRef} position={[0, 0.42, 0]}>
+        <mesh rotation={[Math.PI / 2, 0, 0]} castShadow>
+          <cylinderGeometry args={[0.2, 0.2, 0.055, 16]} />
+          <meshStandardMaterial
+            color={0xfacc15}
+            emissive={0xb45309}
+            emissiveIntensity={0.65}
+            metalness={0.88}
+            roughness={0.2}
+          />
+        </mesh>
+        <mesh rotation={[Math.PI / 2, 0, 0]}>
+          <cylinderGeometry args={[0.12, 0.12, 0.065, 12]} />
+          <meshStandardMaterial
+            color={0xfef08a}
+            emissive={0xd97706}
+            emissiveIntensity={0.5}
+            metalness={0.9}
+            roughness={0.18}
+          />
+        </mesh>
+        <mesh position={[0.16, -0.14, 0.1]} rotation={[0.45, 0.3, 0.9]}>
+          <cylinderGeometry args={[0.11, 0.11, 0.035, 12]} />
+          <meshStandardMaterial
+            color={0xf59e0b}
+            emissive={0x92400e}
+            emissiveIntensity={0.55}
+            metalness={0.88}
+            roughness={0.22}
+          />
+        </mesh>
+      </group>
+    </group>
+  );
+};
+
 const LockedGateBarrier: React.FC<{
   position: [number, number, number];
   unlocked: boolean;
@@ -653,6 +718,7 @@ interface DungeonEnvironmentProps {
   destroyedObstacleIds: Set<string>;
   hasKey: boolean;
   collectedPotions: Set<string>;
+  droppedLoot: LootDropItem[];
   doorUnlocked: boolean;
   sanctumUnlocked: boolean;
   wardenUnlocked: boolean;
@@ -665,6 +731,7 @@ export const DungeonEnvironment: React.FC<DungeonEnvironmentProps> = ({
   destroyedObstacleIds,
   hasKey,
   collectedPotions,
+  droppedLoot,
   doorUnlocked,
   sanctumUnlocked,
   wardenUnlocked,
@@ -1189,6 +1256,20 @@ export const DungeonEnvironment: React.FC<DungeonEnvironmentProps> = ({
           hasLight={potion.hasLight !== false}
         />
       ))}
+
+      {/* ================= DROPPED LOOT (GOLD & POTIONS) ================= */}
+      {droppedLoot.map((item) =>
+        item.type === 'gold' ? (
+          <GoldCoinPickup key={item.id} position={[item.x, 0, item.z]} />
+        ) : (
+          <HealingPotion
+            key={item.id}
+            position={[item.x, 0, item.z]}
+            collected={false}
+            hasLight={false}
+          />
+        )
+      )}
 
       {/* ================= OBSTACLES & ARCHITECTURAL PROPS ================= */}
       {DUNGEON_OBSTACLES.map((obs) => {

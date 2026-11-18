@@ -116,3 +116,16 @@ export interface MapEnemyPin {
   variant: EnemyVariant;
   name: string;
 }
+
+export type LootDropType = 'gold' | 'potion';
+
+export interface LootDropItem {
+  id: string;
+  sourceId: string;
+  type: LootDropType;
+  x: number;
+  z: number;
+  amount: number;
+  age: number;
+}
+

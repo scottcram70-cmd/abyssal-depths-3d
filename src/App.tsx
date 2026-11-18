@@ -10,7 +10,8 @@ import {
   ProjectedDamageNumber,
 } from './components/CombatEffects';
 import { GameHUD } from './components/GameHUD';
-import { soundManager } from './audio/soundManager';
+import { TitleScreen } from './components/TitleScreen';
+import { getDesiredMusicTrack, soundManager } from './audio/soundManager';
 import {
   CHECKPOINT_ROOM_3_SPAWN,
   DUNGEON_OBSTACLES,
@@ -24,6 +25,7 @@ import {
   SANCTUM_GATE_POSITION,
   WARDEN_GATE_POSITION,
   getRoomIdForPosition,
+  hasLineOfSight,
   resolveMovementCollision,
 } from './utils/obstacles';
 import {
@@ -41,8 +43,10 @@ import {
   getLevelFromXp,
   getMaxHealthForLevel,
 } from './utils/progression';
+import { rollBarrelLoot, rollEnemyLoot } from './utils/loot';
 import {
   EnemyRuntime,
+  LootDropItem,
   MapEnemyPin,
   RoomId,
   SparkParticle,
@@ -161,6 +165,7 @@ interface HudSyncPayload {
   playerMagic: number;
   playerMaxMagic: number;
   healingPotions: number;
+  gold: number;
   inCombat: boolean;
   isHealthRegenerating: boolean;
   isMagicRegenerating: boolean;
@@ -182,6 +187,8 @@ interface HudSyncPayload {
   portalActive: boolean;
   showHealthRestored: boolean;
   showPotionPickedUp: boolean;
+  showGoldPickedUp: boolean;
+  lastGoldPickedUp: number;
   showLevelUp: boolean;
   levelUpLevel: number;
   checkpointRoom: RoomId | null;
@@ -203,6 +210,8 @@ interface GameWorldProps {
   dashRequestedRef: React.MutableRefObject<boolean>;
   healRequestedRef: React.MutableRefObject<boolean>;
   characterXpRef: React.MutableRefObject<number>;
+  hasEnteredDungeon: boolean;
+  hasEnteredDungeonRef: React.MutableRefObject<boolean>;
   isPaused: boolean;
   isPausedRef: React.MutableRefObject<boolean>;
   resetCounter: number;
@@ -217,6 +226,8 @@ const GameWorld: React.FC<GameWorldProps> = ({
   dashRequestedRef,
   healRequestedRef,
   characterXpRef,
+  hasEnteredDungeon,
+  hasEnteredDungeonRef,
   isPaused,
   isPausedRef,
   resetCounter,
@@ -231,6 +242,7 @@ const GameWorld: React.FC<GameWorldProps> = ({
     playerHp: getMaxHealthForLevel(getLevelFromXp(characterXpRef.current)),
     playerMagic: BASE_PLAYER_MAX_MAGIC,
     healingPotions: STARTING_HEALING_POTIONS,
+    gold: 0,
     timeSinceCombatAction: HEALTH_REGEN_DELAY_SEC,
     xp: characterXpRef.current,
     level: getLevelFromXp(characterXpRef.current),
@@ -249,6 +261,9 @@ const GameWorld: React.FC<GameWorldProps> = ({
 
     enemies: createInitialEnemies(),
     destroyedObstacles: new Set<string>(),
+    lootedBarrelIds: new Set<string>(),
+    lootedEnemyIds: new Set<string>(),
+    droppedLoot: [] as LootDropItem[],
     discoveredRooms: new Set<RoomId>([1]),
     checkpointRoom: null as RoomId | null,
     checkpointNoticeTimer: 0,
@@ -257,6 +272,8 @@ const GameWorld: React.FC<GameWorldProps> = ({
     collectedPotions: new Set<string>(),
     potionNoticeTimer: 0,
     potionPickupNoticeTimer: 0,
+    goldNoticeTimer: 0,
+    lastGoldPickedUp: 0,
     doorUnlocked: false,
     sanctumUnlocked: false,
     wardenUnlocked: false,
@@ -291,6 +308,7 @@ const GameWorld: React.FC<GameWorldProps> = ({
     destroyedObstacles: new Set<string>(),
     hasKey: false,
     collectedPotions: new Set<string>(),
+    droppedLoot: [] as LootDropItem[],
     doorUnlocked: false,
     sanctumUnlocked: false,
     wardenUnlocked: false,
@@ -315,6 +333,7 @@ const GameWorld: React.FC<GameWorldProps> = ({
       playerHp: preservedMaxHp,
       playerMagic: BASE_PLAYER_MAX_MAGIC,
       healingPotions: STARTING_HEALING_POTIONS,
+      gold: 0,
       timeSinceCombatAction: HEALTH_REGEN_DELAY_SEC,
       xp: preservedXp,
       level: preservedLevel,
@@ -333,6 +352,9 @@ const GameWorld: React.FC<GameWorldProps> = ({
 
       enemies: freshEnemies,
       destroyedObstacles: new Set<string>(),
+      lootedBarrelIds: new Set<string>(),
+      lootedEnemyIds: new Set<string>(),
+      droppedLoot: [],
       discoveredRooms: new Set<RoomId>([1]),
       checkpointRoom: null,
       checkpointNoticeTimer: 0,
@@ -341,6 +363,8 @@ const GameWorld: React.FC<GameWorldProps> = ({
       collectedPotions: new Set<string>(),
       potionNoticeTimer: 0,
       potionPickupNoticeTimer: 0,
+      goldNoticeTimer: 0,
+      lastGoldPickedUp: 0,
       doorUnlocked: false,
       sanctumUnlocked: false,
       wardenUnlocked: false,
@@ -363,6 +387,7 @@ const GameWorld: React.FC<GameWorldProps> = ({
       playerMagic: BASE_PLAYER_MAX_MAGIC,
       playerMaxMagic: BASE_PLAYER_MAX_MAGIC,
       healingPotions: STARTING_HEALING_POTIONS,
+      gold: 0,
       inCombat: false,
       isHealthRegenerating: false,
       isMagicRegenerating: false,
@@ -392,6 +417,8 @@ const GameWorld: React.FC<GameWorldProps> = ({
       portalActive: false,
       showHealthRestored: false,
       showPotionPickedUp: false,
+      showGoldPickedUp: false,
+      lastGoldPickedUp: 0,
       showLevelUp: false,
       levelUpLevel: preservedLevel,
       checkpointRoom: null,
@@ -438,6 +465,8 @@ const GameWorld: React.FC<GameWorldProps> = ({
     sim.dashDir = { x: 0, z: -1 };
     sim.potionNoticeTimer = 0;
     sim.potionPickupNoticeTimer = 0;
+    sim.goldNoticeTimer = 0;
+    sim.lastGoldPickedUp = 0;
     sim.checkpointNoticeTimer = 0;
     sim.dungeonCompleted = false;
 
@@ -490,6 +519,7 @@ const GameWorld: React.FC<GameWorldProps> = ({
       destroyedObstacles: new Set(sim.destroyedObstacles),
       hasKey: sim.hasKey,
       collectedPotions: new Set(sim.collectedPotions),
+      droppedLoot: sim.droppedLoot.map((item) => ({ ...item })),
       doorUnlocked: sim.doorUnlocked,
       sanctumUnlocked: sim.sanctumUnlocked,
       wardenUnlocked: sim.wardenUnlocked,
@@ -518,6 +548,7 @@ const GameWorld: React.FC<GameWorldProps> = ({
       playerMagic: BASE_PLAYER_MAX_MAGIC,
       playerMaxMagic: BASE_PLAYER_MAX_MAGIC,
       healingPotions: sim.healingPotions,
+      gold: sim.gold,
       inCombat: false,
       isHealthRegenerating: false,
       isMagicRegenerating: false,
@@ -555,6 +586,8 @@ const GameWorld: React.FC<GameWorldProps> = ({
       portalActive,
       showHealthRestored: false,
       showPotionPickedUp: false,
+      showGoldPickedUp: false,
+      lastGoldPickedUp: 0,
       showLevelUp: false,
       levelUpLevel: preservedLevel,
       checkpointRoom: sim.checkpointRoom,
@@ -595,7 +628,7 @@ const GameWorld: React.FC<GameWorldProps> = ({
   );
 
   useFrame((state, rawDelta) => {
-    if (isPausedRef.current) {
+    if (!hasEnteredDungeonRef.current || isPausedRef.current) {
       attackRequestedRef.current = false;
       dashRequestedRef.current = false;
       healRequestedRef.current = false;
@@ -631,6 +664,7 @@ const GameWorld: React.FC<GameWorldProps> = ({
     if (sim.playerHitTimer > 0) sim.playerHitTimer = Math.max(0, sim.playerHitTimer - dt);
     if (sim.potionNoticeTimer > 0) sim.potionNoticeTimer = Math.max(0, sim.potionNoticeTimer - dt);
     if (sim.potionPickupNoticeTimer > 0) sim.potionPickupNoticeTimer = Math.max(0, sim.potionPickupNoticeTimer - dt);
+    if (sim.goldNoticeTimer > 0) sim.goldNoticeTimer = Math.max(0, sim.goldNoticeTimer - dt);
     if (sim.levelUpNoticeTimer > 0) sim.levelUpNoticeTimer = Math.max(0, sim.levelUpNoticeTimer - dt);
     if (sim.checkpointNoticeTimer > 0) sim.checkpointNoticeTimer = Math.max(0, sim.checkpointNoticeTimer - dt);
     if (sim.shakeIntensity > 0) sim.shakeIntensity = Math.max(0, sim.shakeIntensity - dt * 1.8);
@@ -833,6 +867,20 @@ const GameWorld: React.FC<GameWorldProps> = ({
                   enemy.xpAwarded = true;
                   awardXp(getEnemyXpReward(enemy.variant));
                 }
+                if (!sim.lootedEnemyIds.has(enemy.id)) {
+                  sim.lootedEnemyIds.add(enemy.id);
+                  const drop = rollEnemyLoot(enemy.id, enemy.variant, enemy.x, enemy.z);
+                  if (drop) {
+                    sim.droppedLoot.push(drop);
+                    spawnParticles(
+                      drop.x,
+                      0.55,
+                      drop.z,
+                      drop.type === 'gold' ? '#fbbf24' : '#ef4444',
+                      10
+                    );
+                  }
+                }
               } else if (enemy.state !== 'attack') {
                 enemy.state = 'hurt';
                 enemy.hurtTimer = 0.22;
@@ -856,6 +904,20 @@ const GameWorld: React.FC<GameWorldProps> = ({
               soundManager.playHitSound(false);
               spawnParticles(obs.position[0], 0.55, obs.position[2], '#b45309', 12);
               spawnParticles(obs.position[0], 0.65, obs.position[2], '#78350f', 8);
+              if (!sim.lootedBarrelIds.has(obs.id)) {
+                sim.lootedBarrelIds.add(obs.id);
+                const drop = rollBarrelLoot(obs.id, obs.position[0], obs.position[2]);
+                if (drop) {
+                  sim.droppedLoot.push(drop);
+                  spawnParticles(
+                    drop.x,
+                    0.55,
+                    drop.z,
+                    drop.type === 'gold' ? '#fbbf24' : '#ef4444',
+                    10
+                  );
+                }
+              }
             }
           }
         }
@@ -943,6 +1005,34 @@ const GameWorld: React.FC<GameWorldProps> = ({
             '#ef4444',
             16
           );
+          forceHudSync = true;
+        }
+      }
+
+      // Check dropped barrel & enemy loot (gold coins & red healing potions)
+      for (let i = sim.droppedLoot.length - 1; i >= 0; i--) {
+        const item = sim.droppedLoot[i];
+        item.age += dt;
+        if (item.age < 0.24) continue;
+
+        const lootDist = Math.hypot(
+          sim.playerPos.x - item.x,
+          sim.playerPos.z - item.z
+        );
+        if (lootDist <= 1.2) {
+          sim.droppedLoot.splice(i, 1);
+          if (item.type === 'gold') {
+            sim.gold += item.amount;
+            sim.lastGoldPickedUp = item.amount;
+            sim.goldNoticeTimer = 2.0;
+            soundManager.playLootPickup('gold');
+            spawnParticles(item.x, 0.65, item.z, '#fbbf24', 16);
+          } else {
+            sim.healingPotions += item.amount;
+            sim.potionPickupNoticeTimer = 2.0;
+            soundManager.playLootPickup('potion');
+            spawnParticles(item.x, 0.75, item.z, '#ef4444', 16);
+          }
           forceHudSync = true;
         }
       }
@@ -1129,11 +1219,14 @@ const GameWorld: React.FC<GameWorldProps> = ({
       const dx = sim.playerPos.x - enemy.x;
       const dz = sim.playerPos.z - enemy.z;
       const dist = Math.hypot(dx, dz);
+      const canSeePlayer =
+        enemy.roomId !== 1 ||
+        hasLineOfSight(enemy.x, enemy.z, sim.playerPos.x, sim.playerPos.z, unlockedGates);
 
       if (enemy.state === 'hurt') {
         enemy.hurtTimer -= dt;
         if (enemy.hurtTimer <= 0) {
-          enemy.state = 'chase';
+          enemy.state = canSeePlayer ? 'chase' : 'idle';
         }
       } else if (enemy.state === 'attack') {
         enemy.attackTimer += dt;
@@ -1144,7 +1237,7 @@ const GameWorld: React.FC<GameWorldProps> = ({
           soundManager.playSkeletonAttack();
 
           const hitReach = enemy.attackRange + 0.35;
-          if (dist <= hitReach && !sim.isDashing) {
+          if (canSeePlayer && dist <= hitReach && !sim.isDashing) {
             const enemyDmg =
               enemy.damageMin +
               Math.floor(Math.random() * (enemy.damageMax - enemy.damageMin + 1));
@@ -1174,16 +1267,16 @@ const GameWorld: React.FC<GameWorldProps> = ({
         }
 
         if (enemy.attackTimer >= ENEMY_ATTACK_DURATION) {
-          enemy.state = 'chase';
+          enemy.state = canSeePlayer && dist <= enemy.detectRange ? 'chase' : 'idle';
           enemy.cooldownTimer = ENEMY_ATTACK_COOLDOWN;
         }
       } else {
-        if (dist <= enemy.attackRange && enemy.cooldownTimer <= 0) {
+        if (canSeePlayer && dist <= enemy.attackRange && enemy.cooldownTimer <= 0) {
           enemy.state = 'attack';
           enemy.attackTimer = 0;
           enemy.hasDealtDamage = false;
           enemy.rot = Math.atan2(dx, dz);
-        } else if (dist <= enemy.detectRange) {
+        } else if (canSeePlayer && dist <= enemy.detectRange) {
           enemy.state = 'chase';
           enemy.rot = Math.atan2(dx, dz);
           if (dist > enemy.attackRange * 0.88) {
@@ -1292,6 +1385,7 @@ const GameWorld: React.FC<GameWorldProps> = ({
       destroyedObstacles: new Set(sim.destroyedObstacles),
       hasKey: sim.hasKey,
       collectedPotions: new Set(sim.collectedPotions),
+      droppedLoot: sim.droppedLoot.map((item) => ({ ...item })),
       doorUnlocked: sim.doorUnlocked,
       sanctumUnlocked: sim.sanctumUnlocked,
       wardenUnlocked: sim.wardenUnlocked,
@@ -1317,12 +1411,26 @@ const GameWorld: React.FC<GameWorldProps> = ({
       const nearestEnemy = findNearestLivingEnemy(11.0);
       const enemiesDefeated = sim.enemies.filter((e) => e.hp <= 0).length;
 
+      soundManager.setMusicTrack(
+        getDesiredMusicTrack({
+          currentRoom,
+          playerPos: sim.playerPos,
+          playerHp: sim.playerHp,
+          playerMaxHp: regenMaxHp,
+          timeSinceCombatAction: sim.timeSinceCombatAction,
+          dungeonCompleted: sim.dungeonCompleted,
+          playerDefeated: sim.playerHp <= 0,
+          enemies: sim.enemies,
+        })
+      );
+
       onHudSync({
         playerHp: sim.playerHp,
         playerMaxHp: regenMaxHp,
         playerMagic: sim.playerMagic,
         playerMaxMagic: BASE_PLAYER_MAX_MAGIC,
         healingPotions: sim.healingPotions,
+        gold: sim.gold,
         inCombat,
         isHealthRegenerating,
         isMagicRegenerating,
@@ -1360,6 +1468,8 @@ const GameWorld: React.FC<GameWorldProps> = ({
         portalActive,
         showHealthRestored: sim.potionNoticeTimer > 0,
         showPotionPickedUp: sim.potionPickupNoticeTimer > 0,
+        showGoldPickedUp: sim.goldNoticeTimer > 0,
+        lastGoldPickedUp: sim.lastGoldPickedUp,
         showLevelUp: sim.levelUpNoticeTimer > 0,
         levelUpLevel: sim.levelUpDisplayLevel,
         checkpointRoom: sim.checkpointRoom,
@@ -1382,6 +1492,7 @@ const GameWorld: React.FC<GameWorldProps> = ({
         destroyedObstacleIds={renderState.destroyedObstacles}
         hasKey={renderState.hasKey}
         collectedPotions={renderState.collectedPotions}
+        droppedLoot={renderState.droppedLoot}
         doorUnlocked={renderState.doorUnlocked}
         sanctumUnlocked={renderState.sanctumUnlocked}
         wardenUnlocked={renderState.wardenUnlocked}
@@ -1398,7 +1509,7 @@ const GameWorld: React.FC<GameWorldProps> = ({
         attackProgress={renderState.attackProgress}
         isDashing={renderState.isDashing}
         isHit={renderState.playerHit}
-        isPaused={isPaused}
+        isPaused={!hasEnteredDungeon || isPaused}
       />
 
       {renderState.enemies.map((enemy) => (
@@ -1415,7 +1526,7 @@ const GameWorld: React.FC<GameWorldProps> = ({
           maxHealth={enemy.maxHealth}
           variant={enemy.variant}
           scale={enemy.scale}
-          isPaused={isPaused}
+          isPaused={!hasEnteredDungeon || isPaused}
         />
       ))}
 
@@ -1462,12 +1573,15 @@ export default function App() {
   const dashRequestedRef = useRef(false);
   const healRequestedRef = useRef(false);
   const characterXpRef = useRef(0);
+  const hasEnteredDungeonRef = useRef(false);
   const isPausedRef = useRef(false);
   const canPauseRef = useRef(true);
 
   const [resetCounter, setResetCounter] = useState(0);
   const [checkpointCounter, setCheckpointCounter] = useState(0);
   const [isMuted, setIsMuted] = useState(soundManager.getMuted());
+  const [hasEnteredDungeon, setHasEnteredDungeon] = useState(false);
+  const [hasActiveRun, setHasActiveRun] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
   const [hudState, setHudState] = useState<HudSyncPayload>({
     playerHp: BASE_PLAYER_MAX_HP,
@@ -1475,6 +1589,7 @@ export default function App() {
     playerMagic: BASE_PLAYER_MAX_MAGIC,
     playerMaxMagic: BASE_PLAYER_MAX_MAGIC,
     healingPotions: STARTING_HEALING_POTIONS,
+    gold: 0,
     inCombat: false,
     isHealthRegenerating: false,
     isMagicRegenerating: false,
@@ -1504,6 +1619,8 @@ export default function App() {
     portalActive: false,
     showHealthRestored: false,
     showPotionPickedUp: false,
+    showGoldPickedUp: false,
+    lastGoldPickedUp: 0,
     showLevelUp: false,
     levelUpLevel: 1,
     checkpointRoom: null,
@@ -1518,7 +1635,8 @@ export default function App() {
     damageNumbers: [],
   });
 
-  canPauseRef.current = !(hudState.dungeonCompleted || hudState.playerDefeated);
+  canPauseRef.current =
+    hasEnteredDungeon && !(hudState.dungeonCompleted || hudState.playerDefeated);
 
   const clearActiveInputs = useCallback(() => {
     joystickRef.current = { x: 0, y: 0 };
@@ -1532,21 +1650,57 @@ export default function App() {
     soundManager.enableAudio();
   }, []);
 
+  const handleEnterDungeon = useCallback(() => {
+    clearActiveInputs();
+    isPausedRef.current = false;
+    setIsPaused(false);
+    if (hasActiveRun) {
+      setResetCounter((c) => c + 1);
+    }
+    hasEnteredDungeonRef.current = true;
+    setHasEnteredDungeon(true);
+    setHasActiveRun(true);
+    soundManager.enableAudio();
+    soundManager.startMusic('explore', { restart: hasActiveRun });
+  }, [clearActiveInputs, hasActiveRun]);
+
+  const handleContinueRun = useCallback(() => {
+    clearActiveInputs();
+    isPausedRef.current = false;
+    setIsPaused(false);
+    hasEnteredDungeonRef.current = true;
+    setHasEnteredDungeon(true);
+    soundManager.enableAudio();
+    soundManager.resumeMusic();
+  }, [clearActiveInputs]);
+
+  const handleReturnToTitle = useCallback(() => {
+    clearActiveInputs();
+    isPausedRef.current = false;
+    setIsPaused(false);
+    hasEnteredDungeonRef.current = false;
+    setHasEnteredDungeon(false);
+    soundManager.pauseMusic();
+  }, [clearActiveInputs]);
+
   const handlePause = useCallback(() => {
     if (!canPauseRef.current || isPausedRef.current) return;
     isPausedRef.current = true;
     clearActiveInputs();
     setIsPaused(true);
+    soundManager.pauseMusic();
   }, [clearActiveInputs]);
 
   const handleResume = useCallback(() => {
     clearActiveInputs();
     isPausedRef.current = false;
     setIsPaused(false);
+    soundManager.enableAudio();
+    soundManager.resumeMusic();
   }, [clearActiveInputs]);
 
   const handleMove = useCallback((vec: Vector2D) => {
-    if (isPausedRef.current) {
+    if (!hasEnteredDungeonRef.current || isPausedRef.current) {
       joystickRef.current = { x: 0, y: 0 };
       return;
     }
@@ -1554,17 +1708,17 @@ export default function App() {
   }, []);
 
   const handleAttack = useCallback(() => {
-    if (isPausedRef.current) return;
+    if (!hasEnteredDungeonRef.current || isPausedRef.current) return;
     attackRequestedRef.current = true;
   }, []);
 
   const handleDash = useCallback(() => {
-    if (isPausedRef.current) return;
+    if (!hasEnteredDungeonRef.current || isPausedRef.current) return;
     dashRequestedRef.current = true;
   }, []);
 
   const handleHeal = useCallback(() => {
-    if (isPausedRef.current) return;
+    if (!hasEnteredDungeonRef.current || isPausedRef.current) return;
     healRequestedRef.current = true;
   }, []);
 
@@ -1590,6 +1744,10 @@ export default function App() {
   // Desktop keyboard support (WASD/Arrows to move, Space/J/Enter to attack, Shift/K to dash, H to heal, P to pause/resume)
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
+      if (!hasEnteredDungeonRef.current) {
+        return;
+      }
+
       if (e.code === 'KeyP') {
         e.preventDefault();
         soundManager.enableAudio();
@@ -1692,6 +1850,8 @@ export default function App() {
             dashRequestedRef={dashRequestedRef}
             healRequestedRef={healRequestedRef}
             characterXpRef={characterXpRef}
+            hasEnteredDungeon={hasEnteredDungeon}
+            hasEnteredDungeonRef={hasEnteredDungeonRef}
             isPaused={isPaused}
             isPausedRef={isPausedRef}
             resetCounter={resetCounter}
@@ -1701,59 +1861,80 @@ export default function App() {
         </Canvas>
       </SceneErrorBoundary>
 
-      <DamageNumbersOverlay numbers={hudState.damageNumbers} />
+      {!hasEnteredDungeon ? (
+        <TitleScreen
+          hasActiveRun={
+            hasActiveRun && !(hudState.dungeonCompleted || hudState.playerDefeated)
+          }
+          currentRoom={hudState.currentRoom}
+          playerLevel={hudState.playerLevel}
+          playerHp={hudState.playerHp}
+          playerMaxHp={hudState.playerMaxHp}
+          onEnterDungeon={handleEnterDungeon}
+          onContinueRun={handleContinueRun}
+          onInteract={handleInteract}
+        />
+      ) : (
+        <>
+          <DamageNumbersOverlay numbers={hudState.damageNumbers} />
 
-      <GameHUD
-        playerHp={hudState.playerHp}
-        playerMaxHp={hudState.playerMaxHp}
-        playerMagic={hudState.playerMagic}
-        playerMaxMagic={hudState.playerMaxMagic}
-        healingPotions={hudState.healingPotions}
-        inCombat={hudState.inCombat}
-        isHealthRegenerating={hudState.isHealthRegenerating}
-        isMagicRegenerating={hudState.isMagicRegenerating}
-        playerXp={hudState.playerXp}
-        playerLevel={hudState.playerLevel}
-        playerPos={hudState.playerPos}
-        playerRot={hudState.playerRot}
-        currentRoom={hudState.currentRoom}
-        discoveredRooms={hudState.discoveredRooms}
-        enemies={hudState.enemies}
-        enemiesDefeated={hudState.enemiesDefeated}
-        totalEnemies={hudState.totalEnemies}
-        objectiveText={hudState.objectiveText}
-        hasKey={hudState.hasKey}
-        collectedPotionIds={hudState.collectedPotionIds}
-        doorUnlocked={hudState.doorUnlocked}
-        sanctumUnlocked={hudState.sanctumUnlocked}
-        wardenUnlocked={hudState.wardenUnlocked}
-        portalActive={hudState.portalActive}
-        showHealthRestored={hudState.showHealthRestored}
-        showPotionPickedUp={hudState.showPotionPickedUp}
-        showLevelUp={hudState.showLevelUp}
-        levelUpLevel={hudState.levelUpLevel}
-        checkpointRoom={hudState.checkpointRoom}
-        showCheckpointActivated={hudState.showCheckpointActivated}
-        activeEnemyName={hudState.activeEnemyName}
-        activeEnemyHp={hudState.activeEnemyHp}
-        activeEnemyMaxHp={hudState.activeEnemyMaxHp}
-        dungeonCompleted={hudState.dungeonCompleted}
-        playerDefeated={hudState.playerDefeated}
-        attackCooldownRatio={hudState.attackCooldownRatio}
-        dashCooldownRatio={hudState.dashCooldownRatio}
-        isMuted={isMuted}
-        isPaused={isPaused}
-        onMove={handleMove}
-        onAttack={handleAttack}
-        onDash={handleDash}
-        onHeal={handleHeal}
-        onPause={handlePause}
-        onResume={handleResume}
-        onContinueFromCheckpoint={handleContinueFromCheckpoint}
-        onRestart={handleRestart}
-        onToggleMute={handleToggleMute}
-        onInteract={handleInteract}
-      />
+          <GameHUD
+            playerHp={hudState.playerHp}
+            playerMaxHp={hudState.playerMaxHp}
+            playerMagic={hudState.playerMagic}
+            playerMaxMagic={hudState.playerMaxMagic}
+            healingPotions={hudState.healingPotions}
+            gold={hudState.gold}
+            inCombat={hudState.inCombat}
+            isHealthRegenerating={hudState.isHealthRegenerating}
+            isMagicRegenerating={hudState.isMagicRegenerating}
+            playerXp={hudState.playerXp}
+            playerLevel={hudState.playerLevel}
+            playerPos={hudState.playerPos}
+            playerRot={hudState.playerRot}
+            currentRoom={hudState.currentRoom}
+            discoveredRooms={hudState.discoveredRooms}
+            enemies={hudState.enemies}
+            enemiesDefeated={hudState.enemiesDefeated}
+            totalEnemies={hudState.totalEnemies}
+            objectiveText={hudState.objectiveText}
+            hasKey={hudState.hasKey}
+            collectedPotionIds={hudState.collectedPotionIds}
+            doorUnlocked={hudState.doorUnlocked}
+            sanctumUnlocked={hudState.sanctumUnlocked}
+            wardenUnlocked={hudState.wardenUnlocked}
+            portalActive={hudState.portalActive}
+            showHealthRestored={hudState.showHealthRestored}
+            showPotionPickedUp={hudState.showPotionPickedUp}
+            showGoldPickedUp={hudState.showGoldPickedUp}
+            lastGoldPickedUp={hudState.lastGoldPickedUp}
+            showLevelUp={hudState.showLevelUp}
+            levelUpLevel={hudState.levelUpLevel}
+            checkpointRoom={hudState.checkpointRoom}
+            showCheckpointActivated={hudState.showCheckpointActivated}
+            activeEnemyName={hudState.activeEnemyName}
+            activeEnemyHp={hudState.activeEnemyHp}
+            activeEnemyMaxHp={hudState.activeEnemyMaxHp}
+            dungeonCompleted={hudState.dungeonCompleted}
+            playerDefeated={hudState.playerDefeated}
+            attackCooldownRatio={hudState.attackCooldownRatio}
+            dashCooldownRatio={hudState.dashCooldownRatio}
+            isMuted={isMuted}
+            isPaused={isPaused}
+            onMove={handleMove}
+            onAttack={handleAttack}
+            onDash={handleDash}
+            onHeal={handleHeal}
+            onPause={handlePause}
+            onResume={handleResume}
+            onReturnToTitle={handleReturnToTitle}
+            onContinueFromCheckpoint={handleContinueFromCheckpoint}
+            onRestart={handleRestart}
+            onToggleMute={handleToggleMute}
+            onInteract={handleInteract}
+          />
+        </>
+      )}
     </div>
   );
 }

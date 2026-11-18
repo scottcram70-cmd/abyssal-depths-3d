@@ -4,11 +4,13 @@ import { Vector2D } from '../types/game';
 interface VirtualJoystickProps {
   onMove: (vector: Vector2D) => void;
   onInteract?: () => void;
+  disabled?: boolean;
 }
 
 export const VirtualJoystick: React.FC<VirtualJoystickProps> = ({
   onMove,
   onInteract,
+  disabled = false,
 }) => {
   const baseRef = useRef<HTMLDivElement>(null);
   const activePointerId = useRef<number | null>(null);
@@ -16,6 +18,14 @@ export const VirtualJoystick: React.FC<VirtualJoystickProps> = ({
   const [isActive, setIsActive] = useState(false);
 
   const maxRadius = 46;
+
+  React.useEffect(() => {
+    if (!disabled) return;
+    activePointerId.current = null;
+    setIsActive(false);
+    setKnobOffset({ x: 0, y: 0 });
+    onMove({ x: 0, y: 0 });
+  }, [disabled, onMove]);
 
   const updateFromClientPos = useCallback(
     (clientX: number, clientY: number) => {
@@ -54,6 +64,7 @@ export const VirtualJoystick: React.FC<VirtualJoystickProps> = ({
   const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     e.preventDefault();
     e.stopPropagation();
+    if (disabled) return;
     onInteract?.();
 
     if (activePointerId.current !== null) return;
@@ -64,7 +75,7 @@ export const VirtualJoystick: React.FC<VirtualJoystickProps> = ({
   };
 
   const handlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (activePointerId.current !== e.pointerId) return;
+    if (disabled || activePointerId.current !== e.pointerId) return;
     e.preventDefault();
     updateFromClientPos(e.clientX, e.clientY);
   };

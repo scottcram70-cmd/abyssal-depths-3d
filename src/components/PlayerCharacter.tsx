@@ -11,6 +11,7 @@ interface PlayerCharacterProps {
   attackProgress: number; // 0 to 1
   isDashing: boolean;
   isHit: boolean;
+  isPaused?: boolean;
 }
 
 export const PlayerCharacter: React.FC<PlayerCharacterProps> = ({
@@ -21,6 +22,7 @@ export const PlayerCharacter: React.FC<PlayerCharacterProps> = ({
   attackProgress,
   isDashing,
   isHit,
+  isPaused = false,
 }) => {
   const groupRef = useRef<THREE.Group>(null);
   const rightArmRef = useRef<THREE.Group>(null);
@@ -88,7 +90,7 @@ export const PlayerCharacter: React.FC<PlayerCharacterProps> = ({
 
   // Update position and rotation smoothly
   useFrame((state, delta) => {
-    if (!groupRef.current) return;
+    if (isPaused || !groupRef.current) return;
 
     // Smooth position interpolation
     groupRef.current.position.x = THREE.MathUtils.damp(groupRef.current.position.x, position[0], 25, delta);

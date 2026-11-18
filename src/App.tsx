@@ -11,8 +11,43 @@ import {
 } from './components/CombatEffects';
 import { GameHUD } from './components/GameHUD';
 import { soundManager } from './audio/soundManager';
-import { resolveMovementCollision } from './utils/obstacles';
-import { EnemyState, SparkParticle, Vector2D } from './types/game';
+import {
+  CHECKPOINT_ROOM_3_SPAWN,
+  DUNGEON_OBSTACLES,
+  EXIT_PORTAL_POSITION,
+  GateUnlockState,
+  INITIAL_ENEMY_SPAWNS,
+  KEY_POSITION,
+  LOCKED_GATE_POSITION,
+  PLAYER_SPAWN,
+  POTION_SPAWNS,
+  SANCTUM_GATE_POSITION,
+  WARDEN_GATE_POSITION,
+  getRoomIdForPosition,
+  resolveMovementCollision,
+} from './utils/obstacles';
+import {
+  BASE_PLAYER_MAX_HP,
+  BASE_PLAYER_MAX_MAGIC,
+  DASH_MAGIC_COST,
+  HEALTH_REGEN_DELAY_SEC,
+  HEALTH_REGEN_RATE_PER_SEC,
+  MAGIC_REGEN_RATE_IN_COMBAT,
+  MAGIC_REGEN_RATE_OUT_OF_COMBAT,
+  POTION_HEAL_RATIO,
+  STARTING_HEALING_POTIONS,
+  XP_REWARDS,
+  getEnemyXpReward,
+  getLevelFromXp,
+  getMaxHealthForLevel,
+} from './utils/progression';
+import {
+  EnemyRuntime,
+  MapEnemyPin,
+  RoomId,
+  SparkParticle,
+  Vector2D,
+} from './types/game';
 
 // Probe software WebGL once (never throttle game logic, only GPU cost)
 const isSoftwareGl = (() => {
@@ -31,37 +66,148 @@ const isSoftwareGl = (() => {
   }
 })();
 
-const PLAYER_MAX_HP = 100;
-const ENEMY_MAX_HP = 120;
-const PLAYER_SPEED = 4.6;
+const PLAYER_SPEED = 4.7;
 const DASH_SPEED = 11.5;
 const DASH_DURATION = 0.18;
-const DASH_COOLDOWN = 1.1;
+const DASH_COOLDOWN = 1.05;
 const ATTACK_DURATION = 0.36;
-const ATTACK_COOLDOWN = 0.54;
-const ENEMY_DETECT_RANGE = 7.0;
-const ENEMY_ATTACK_RANGE = 1.85;
-const ENEMY_SPEED = 2.65;
+const ATTACK_COOLDOWN = 0.52;
 const ENEMY_ATTACK_DURATION = 0.78;
 const ENEMY_ATTACK_COOLDOWN = 1.35;
 
 const _projVec = new THREE.Vector3();
+
+function createInitialEnemies(): EnemyRuntime[] {
+  return INITIAL_ENEMY_SPAWNS.map((cfg) => ({
+    ...cfg,
+    x: cfg.position[0],
+    z: cfg.position[1],
+    rot: 0,
+    hp: cfg.maxHealth,
+    state: 'idle',
+    attackTimer: 0,
+    cooldownTimer: 0,
+    hurtTimer: 0,
+    hitFlashTimer: 0,
+    hasDealtDamage: false,
+    deathSoundPlayed: false,
+    xpAwarded: false,
+  }));
+}
+
+function getObjectiveText(
+  roomId: RoomId,
+  enemies: EnemyRuntime[],
+  hasKey: boolean,
+  doorUnlocked: boolean,
+  sanctumUnlocked: boolean,
+  wardenUnlocked: boolean,
+  portalActive: boolean
+): string {
+  if (roomId === 1) {
+    const r1Alive = enemies.some((e) => e.roomId === 1 && e.hp > 0);
+    return r1Alive
+      ? 'Defeat the Crypt Skeleton & head north'
+      : 'Chamber cleared — proceed north into the corridor';
+  }
+  if (roomId === 2) {
+    if (!hasKey) {
+      return 'Find the Golden Key to unlock the north gate';
+    }
+    if (!doorUnlocked) {
+      return 'Key acquired! Approach the north gate to unlock it';
+    }
+    return 'Gate unlocked — enter the Abyssal Sanctum north';
+  }
+  if (roomId === 3) {
+    if (!sanctumUnlocked) {
+      return 'Defeat the Skeleton Guardian to unseal the north gate';
+    }
+    return 'Sanctum unsealed — continue north into the Plague Catacombs';
+  }
+  if (roomId === 4) {
+    const r4Alive = enemies.some((e) => e.roomId === 4 && e.hp > 0);
+    return r4Alive
+      ? 'Clear the Plague Catacombs & push east'
+      : 'Catacombs cleared — take the east bridge to Room 5';
+  }
+  if (roomId === 5) {
+    const r5Alive = enemies.some((e) => e.roomId === 5 && e.hp > 0);
+    return r5Alive
+      ? 'Battle through the Shattered Ossuary'
+      : 'Ossuary cleared — head south to the Arcane Conduit';
+  }
+  if (roomId === 6) {
+    const r6Alive = enemies.some((e) => e.roomId === 6 && e.hp > 0);
+    return r6Alive
+      ? 'Defeat the Arcane Conduit defenders'
+      : "Conduit cleared — march south to Warden's Bastion";
+  }
+  if (roomId === 7) {
+    if (!wardenUnlocked) {
+      return 'Defeat the Abyssal Dreadlord mini-boss to unlock the final gate';
+    }
+    return 'Warden defeated! Proceed south to the Throne of Escape';
+  }
+  if (!portalActive) {
+    return 'Defeat the final guardians to awaken the Exit Portal';
+  }
+  return 'Portal active! Step into the Exit Portal to escape';
+}
+
+interface HudSyncPayload {
+  playerHp: number;
+  playerMaxHp: number;
+  playerMagic: number;
+  playerMaxMagic: number;
+  healingPotions: number;
+  inCombat: boolean;
+  isHealthRegenerating: boolean;
+  isMagicRegenerating: boolean;
+  playerXp: number;
+  playerLevel: number;
+  playerPos: { x: number; z: number };
+  playerRot: number;
+  currentRoom: RoomId;
+  discoveredRooms: RoomId[];
+  enemies: MapEnemyPin[];
+  enemiesDefeated: number;
+  totalEnemies: number;
+  objectiveText: string;
+  hasKey: boolean;
+  collectedPotionIds: string[];
+  doorUnlocked: boolean;
+  sanctumUnlocked: boolean;
+  wardenUnlocked: boolean;
+  portalActive: boolean;
+  showHealthRestored: boolean;
+  showPotionPickedUp: boolean;
+  showLevelUp: boolean;
+  levelUpLevel: number;
+  checkpointRoom: RoomId | null;
+  showCheckpointActivated: boolean;
+  activeEnemyName: string | null;
+  activeEnemyHp: number;
+  activeEnemyMaxHp: number;
+  dungeonCompleted: boolean;
+  playerDefeated: boolean;
+  attackCooldownRatio: number;
+  dashCooldownRatio: number;
+  damageNumbers: ProjectedDamageNumber[];
+}
 
 interface GameWorldProps {
   joystickRef: React.MutableRefObject<Vector2D>;
   keysRef: React.MutableRefObject<Record<string, boolean>>;
   attackRequestedRef: React.MutableRefObject<boolean>;
   dashRequestedRef: React.MutableRefObject<boolean>;
+  healRequestedRef: React.MutableRefObject<boolean>;
+  characterXpRef: React.MutableRefObject<number>;
+  isPaused: boolean;
+  isPausedRef: React.MutableRefObject<boolean>;
   resetCounter: number;
-  onHudSync: (data: {
-    playerHp: number;
-    enemyHp: number;
-    enemyDefeated: boolean;
-    playerDefeated: boolean;
-    attackCooldownRatio: number;
-    dashCooldownRatio: number;
-    damageNumbers: ProjectedDamageNumber[];
-  }) => void;
+  checkpointCounter: number;
+  onHudSync: (data: HudSyncPayload) => void;
 }
 
 const GameWorld: React.FC<GameWorldProps> = ({
@@ -69,16 +215,27 @@ const GameWorld: React.FC<GameWorldProps> = ({
   keysRef,
   attackRequestedRef,
   dashRequestedRef,
+  healRequestedRef,
+  characterXpRef,
+  isPaused,
+  isPausedRef,
   resetCounter,
+  checkpointCounter,
   onHudSync,
 }) => {
   const { camera } = useThree();
 
-  // Mutable simulation state inside refs for 60fps loop without stale closures
   const simRef = useRef({
-    playerPos: { x: 0, z: 3.6 },
-    playerRot: Math.PI, // Facing north toward the skeleton
-    playerHp: PLAYER_MAX_HP,
+    playerPos: { x: PLAYER_SPAWN[0], z: PLAYER_SPAWN[1] },
+    playerRot: Math.PI,
+    playerHp: getMaxHealthForLevel(getLevelFromXp(characterXpRef.current)),
+    playerMagic: BASE_PLAYER_MAX_MAGIC,
+    healingPotions: STARTING_HEALING_POTIONS,
+    timeSinceCombatAction: HEALTH_REGEN_DELAY_SEC,
+    xp: characterXpRef.current,
+    level: getLevelFromXp(characterXpRef.current),
+    levelUpNoticeTimer: 0,
+    levelUpDisplayLevel: getLevelFromXp(characterXpRef.current),
     playerHitTimer: 0,
     isMoving: false,
     isAttacking: false,
@@ -90,19 +247,24 @@ const GameWorld: React.FC<GameWorldProps> = ({
     dashCooldownTimer: 0,
     dashDir: { x: 0, z: -1 },
 
-    enemyPos: { x: 0, z: -3.2 },
-    enemyRot: 0, // Facing south toward player
-    enemyHp: ENEMY_MAX_HP,
-    enemyState: 'idle' as EnemyState,
-    enemyAttackTimer: 0,
-    enemyCooldownTimer: 0,
-    enemyHurtTimer: 0,
-    enemyHitFlashTimer: 0,
-    hasDealtEnemyDamage: false,
-    victoryTriggered: false,
+    enemies: createInitialEnemies(),
+    destroyedObstacles: new Set<string>(),
+    discoveredRooms: new Set<RoomId>([1]),
+    checkpointRoom: null as RoomId | null,
+    checkpointNoticeTimer: 0,
+    hasKey: false,
+    keyXpAwarded: false,
+    collectedPotions: new Set<string>(),
+    potionNoticeTimer: 0,
+    potionPickupNoticeTimer: 0,
+    doorUnlocked: false,
+    sanctumUnlocked: false,
+    wardenUnlocked: false,
+    dungeonCompleted: false,
+    completionXpAwarded: false,
 
     shakeIntensity: 0,
-    camTarget: { x: 0, z: 1.5 },
+    camTarget: { x: PLAYER_SPAWN[0] * 0.6, z: PLAYER_SPAWN[1] },
     particles: [] as SparkParticle[],
     damageNumbers: [] as {
       id: string;
@@ -117,33 +279,47 @@ const GameWorld: React.FC<GameWorldProps> = ({
     impactRing: null as { x: number; z: number; progress: number } | null,
   });
 
-  // React render state for animated 3D props
-  const [renderState, setRenderState] = useState({
-    playerPos: [0, 0, 3.6] as [number, number, number],
+  const [renderState, setRenderState] = useState(() => ({
+    playerPos: [PLAYER_SPAWN[0], 0, PLAYER_SPAWN[1]] as [number, number, number],
     playerRot: Math.PI,
     isMoving: false,
     isAttacking: false,
     attackProgress: 0,
     isDashing: false,
     playerHit: false,
-    enemyPos: [0, 0, -3.2] as [number, number, number],
-    enemyRot: 0,
-    enemyState: 'idle' as EnemyState,
-    enemyAttackProgress: 0,
-    enemyHit: false,
-    enemyHp: ENEMY_MAX_HP,
+    enemies: createInitialEnemies(),
+    destroyedObstacles: new Set<string>(),
+    hasKey: false,
+    collectedPotions: new Set<string>(),
+    doorUnlocked: false,
+    sanctumUnlocked: false,
+    wardenUnlocked: false,
+    portalActive: false,
     particles: [] as SparkParticle[],
     impactRing: null as { x: number; z: number; progress: number } | null,
-  });
+  }));
 
   const lastHudSyncRef = useRef(0);
+  const prevCheckpointCounterRef = useRef(checkpointCounter);
 
-  // Reset entire encounter when Restart is triggered
+  // Reset dungeon-specific state when Restart is triggered while preserving session XP & Level
   useEffect(() => {
+    const freshEnemies = createInitialEnemies();
+    const preservedXp = characterXpRef.current;
+    const preservedLevel = getLevelFromXp(preservedXp);
+    const preservedMaxHp = getMaxHealthForLevel(preservedLevel);
+
     simRef.current = {
-      playerPos: { x: 0, z: 3.6 },
+      playerPos: { x: PLAYER_SPAWN[0], z: PLAYER_SPAWN[1] },
       playerRot: Math.PI,
-      playerHp: PLAYER_MAX_HP,
+      playerHp: preservedMaxHp,
+      playerMagic: BASE_PLAYER_MAX_MAGIC,
+      healingPotions: STARTING_HEALING_POTIONS,
+      timeSinceCombatAction: HEALTH_REGEN_DELAY_SEC,
+      xp: preservedXp,
+      level: preservedLevel,
+      levelUpNoticeTimer: 0,
+      levelUpDisplayLevel: preservedLevel,
       playerHitTimer: 0,
       isMoving: false,
       isAttacking: false,
@@ -155,37 +331,244 @@ const GameWorld: React.FC<GameWorldProps> = ({
       dashCooldownTimer: 0,
       dashDir: { x: 0, z: -1 },
 
-      enemyPos: { x: 0, z: -3.2 },
-      enemyRot: 0,
-      enemyHp: ENEMY_MAX_HP,
-      enemyState: 'idle',
-      enemyAttackTimer: 0,
-      enemyCooldownTimer: 0,
-      enemyHurtTimer: 0,
-      enemyHitFlashTimer: 0,
-      hasDealtEnemyDamage: false,
-      victoryTriggered: false,
+      enemies: freshEnemies,
+      destroyedObstacles: new Set<string>(),
+      discoveredRooms: new Set<RoomId>([1]),
+      checkpointRoom: null,
+      checkpointNoticeTimer: 0,
+      hasKey: false,
+      keyXpAwarded: false,
+      collectedPotions: new Set<string>(),
+      potionNoticeTimer: 0,
+      potionPickupNoticeTimer: 0,
+      doorUnlocked: false,
+      sanctumUnlocked: false,
+      wardenUnlocked: false,
+      dungeonCompleted: false,
+      completionXpAwarded: false,
 
       shakeIntensity: 0,
-      camTarget: { x: 0, z: 1.5 },
+      camTarget: { x: PLAYER_SPAWN[0] * 0.6, z: PLAYER_SPAWN[1] },
       particles: [],
       damageNumbers: [],
       impactRing: null,
     };
 
-    camera.position.set(8.5, 11.6, 12.1);
-    camera.lookAt(0, 0.7, 1.5);
+    camera.position.set(8.5, 11.6, PLAYER_SPAWN[1] + 8.5);
+    camera.lookAt(0, 0.7, PLAYER_SPAWN[1]);
 
     onHudSync({
-      playerHp: PLAYER_MAX_HP,
-      enemyHp: ENEMY_MAX_HP,
-      enemyDefeated: false,
+      playerHp: preservedMaxHp,
+      playerMaxHp: preservedMaxHp,
+      playerMagic: BASE_PLAYER_MAX_MAGIC,
+      playerMaxMagic: BASE_PLAYER_MAX_MAGIC,
+      healingPotions: STARTING_HEALING_POTIONS,
+      inCombat: false,
+      isHealthRegenerating: false,
+      isMagicRegenerating: false,
+      playerXp: preservedXp,
+      playerLevel: preservedLevel,
+      playerPos: { x: PLAYER_SPAWN[0], z: PLAYER_SPAWN[1] },
+      playerRot: Math.PI,
+      currentRoom: 1,
+      discoveredRooms: [1],
+      enemies: freshEnemies.map((e) => ({
+        id: e.id,
+        roomId: e.roomId,
+        x: e.x,
+        z: e.z,
+        hp: e.hp,
+        variant: e.variant,
+        name: e.name,
+      })),
+      enemiesDefeated: 0,
+      totalEnemies: freshEnemies.length,
+      objectiveText: getObjectiveText(1, freshEnemies, false, false, false, false, false),
+      hasKey: false,
+      collectedPotionIds: [],
+      doorUnlocked: false,
+      sanctumUnlocked: false,
+      wardenUnlocked: false,
+      portalActive: false,
+      showHealthRestored: false,
+      showPotionPickedUp: false,
+      showLevelUp: false,
+      levelUpLevel: preservedLevel,
+      checkpointRoom: null,
+      showCheckpointActivated: false,
+      activeEnemyName: freshEnemies[0].name,
+      activeEnemyHp: freshEnemies[0].hp,
+      activeEnemyMaxHp: freshEnemies[0].maxHealth,
+      dungeonCompleted: false,
       playerDefeated: false,
       attackCooldownRatio: 0,
       dashCooldownRatio: 0,
       damageNumbers: [],
     });
-  }, [resetCounter, camera, onHudSync]);
+  }, [resetCounter, camera, onHudSync, characterXpRef]);
+
+  // Respawn at active Room 3 checkpoint with full health while preserving XP, levels, attributes, potions & inventory
+  useEffect(() => {
+    if (checkpointCounter === prevCheckpointCounterRef.current) return;
+    prevCheckpointCounterRef.current = checkpointCounter;
+
+    const sim = simRef.current;
+    const spawn = CHECKPOINT_ROOM_3_SPAWN;
+    const preservedXp = characterXpRef.current;
+    const preservedLevel = getLevelFromXp(preservedXp);
+    const preservedMaxHp = getMaxHealthForLevel(preservedLevel);
+
+    sim.playerPos = { x: spawn[0], z: spawn[1] };
+    sim.playerRot = Math.PI;
+    sim.playerHp = preservedMaxHp;
+    sim.playerMagic = BASE_PLAYER_MAX_MAGIC;
+    sim.timeSinceCombatAction = HEALTH_REGEN_DELAY_SEC;
+    sim.xp = preservedXp;
+    sim.level = preservedLevel;
+    sim.levelUpNoticeTimer = 0;
+    sim.playerHitTimer = 0;
+    sim.isMoving = false;
+    sim.isAttacking = false;
+    sim.attackTimer = 0;
+    sim.attackCooldownTimer = 0;
+    sim.hasDealtSwingDamage = false;
+    sim.isDashing = false;
+    sim.dashTimer = 0;
+    sim.dashCooldownTimer = 0;
+    sim.dashDir = { x: 0, z: -1 };
+    sim.potionNoticeTimer = 0;
+    sim.potionPickupNoticeTimer = 0;
+    sim.checkpointNoticeTimer = 0;
+    sim.dungeonCompleted = false;
+
+    sim.enemies = sim.enemies.map((enemy) => {
+      if (enemy.hp <= 0) {
+        return {
+          ...enemy,
+          hp: 0,
+          state: 'dead',
+        };
+      }
+      const cfg = INITIAL_ENEMY_SPAWNS.find((s) => s.id === enemy.id);
+      return {
+        ...enemy,
+        x: cfg ? cfg.position[0] : enemy.x,
+        z: cfg ? cfg.position[1] : enemy.z,
+        rot: 0,
+        hp: cfg ? cfg.maxHealth : enemy.maxHealth,
+        state: 'idle',
+        attackTimer: 0,
+        cooldownTimer: 0,
+        hurtTimer: 0,
+        hitFlashTimer: 0,
+        hasDealtDamage: false,
+      };
+    });
+
+    sim.shakeIntensity = 0;
+    sim.camTarget = { x: spawn[0] * 0.58, z: spawn[1] };
+    sim.particles = [];
+    sim.damageNumbers = [];
+    sim.impactRing = null;
+
+    camera.position.set(8.5, 11.6, spawn[1] + 8.5);
+    camera.lookAt(0, 0.7, spawn[1]);
+
+    const portalActive = sim.enemies
+      .filter((e) => e.roomId === 8)
+      .every((e) => e.hp <= 0);
+
+    setRenderState({
+      playerPos: [spawn[0], 0, spawn[1]],
+      playerRot: Math.PI,
+      isMoving: false,
+      isAttacking: false,
+      attackProgress: 0,
+      isDashing: false,
+      playerHit: false,
+      enemies: sim.enemies.map((e) => ({ ...e })),
+      destroyedObstacles: new Set(sim.destroyedObstacles),
+      hasKey: sim.hasKey,
+      collectedPotions: new Set(sim.collectedPotions),
+      doorUnlocked: sim.doorUnlocked,
+      sanctumUnlocked: sim.sanctumUnlocked,
+      wardenUnlocked: sim.wardenUnlocked,
+      portalActive,
+      particles: [],
+      impactRing: null,
+    });
+
+    const respawnRoom = getRoomIdForPosition(spawn[0], spawn[1]);
+    sim.discoveredRooms.add(respawnRoom);
+    let nearestEnemy: EnemyRuntime | null = null;
+    let nearestDist = 11.0;
+    for (let i = 0; i < sim.enemies.length; i++) {
+      const e = sim.enemies[i];
+      if (e.hp <= 0) continue;
+      const d = Math.hypot(e.x - spawn[0], e.z - spawn[1]);
+      if (d < nearestDist) {
+        nearestDist = d;
+        nearestEnemy = e;
+      }
+    }
+
+    onHudSync({
+      playerHp: preservedMaxHp,
+      playerMaxHp: preservedMaxHp,
+      playerMagic: BASE_PLAYER_MAX_MAGIC,
+      playerMaxMagic: BASE_PLAYER_MAX_MAGIC,
+      healingPotions: sim.healingPotions,
+      inCombat: false,
+      isHealthRegenerating: false,
+      isMagicRegenerating: false,
+      playerXp: preservedXp,
+      playerLevel: preservedLevel,
+      playerPos: { x: spawn[0], z: spawn[1] },
+      playerRot: Math.PI,
+      currentRoom: respawnRoom,
+      discoveredRooms: Array.from(sim.discoveredRooms),
+      enemies: sim.enemies.map((e) => ({
+        id: e.id,
+        roomId: e.roomId,
+        x: e.x,
+        z: e.z,
+        hp: e.hp,
+        variant: e.variant,
+        name: e.name,
+      })),
+      enemiesDefeated: sim.enemies.filter((e) => e.hp <= 0).length,
+      totalEnemies: sim.enemies.length,
+      objectiveText: getObjectiveText(
+        respawnRoom,
+        sim.enemies,
+        sim.hasKey,
+        sim.doorUnlocked,
+        sim.sanctumUnlocked,
+        sim.wardenUnlocked,
+        portalActive
+      ),
+      hasKey: sim.hasKey,
+      collectedPotionIds: Array.from(sim.collectedPotions),
+      doorUnlocked: sim.doorUnlocked,
+      sanctumUnlocked: sim.sanctumUnlocked,
+      wardenUnlocked: sim.wardenUnlocked,
+      portalActive,
+      showHealthRestored: false,
+      showPotionPickedUp: false,
+      showLevelUp: false,
+      levelUpLevel: preservedLevel,
+      checkpointRoom: sim.checkpointRoom,
+      showCheckpointActivated: false,
+      activeEnemyName: nearestEnemy ? nearestEnemy.name : null,
+      activeEnemyHp: nearestEnemy ? nearestEnemy.hp : 0,
+      activeEnemyMaxHp: nearestEnemy ? nearestEnemy.maxHealth : 0,
+      dungeonCompleted: false,
+      playerDefeated: false,
+      attackCooldownRatio: 0,
+      dashCooldownRatio: 0,
+      damageNumbers: [],
+    });
+  }, [checkpointCounter, camera, onHudSync, characterXpRef]);
 
   const spawnParticles = useCallback(
     (x: number, y: number, z: number, color: string, count: number) => {
@@ -212,19 +595,54 @@ const GameWorld: React.FC<GameWorldProps> = ({
   );
 
   useFrame((state, rawDelta) => {
+    if (isPausedRef.current) {
+      attackRequestedRef.current = false;
+      dashRequestedRef.current = false;
+      healRequestedRef.current = false;
+      return;
+    }
+
     const dt = Math.min(rawDelta, 0.05);
     const sim = simRef.current;
 
-    const playerAlive = sim.playerHp > 0;
-    const enemyAlive = sim.enemyHp > 0;
+    const playerAlive = sim.playerHp > 0 && !sim.dungeonCompleted;
+    let forceHudSync = false;
 
-    // 1. Decay timers
+    const awardXp = (amount: number) => {
+      if (amount <= 0) return;
+      sim.xp += amount;
+      characterXpRef.current = sim.xp;
+      const nextLevel = getLevelFromXp(sim.xp);
+      if (nextLevel > sim.level) {
+        const oldMaxHp = getMaxHealthForLevel(sim.level);
+        const newMaxHp = getMaxHealthForLevel(nextLevel);
+        sim.level = nextLevel;
+        sim.playerHp = Math.min(newMaxHp, sim.playerHp + (newMaxHp - oldMaxHp));
+        sim.levelUpDisplayLevel = nextLevel;
+        sim.levelUpNoticeTimer = 2.8;
+        spawnParticles(sim.playerPos.x, 1.15, sim.playerPos.z, '#fbbf24', 22);
+      }
+      forceHudSync = true;
+    };
+
+    // 1. Decay timers & advance out-of-combat clock
     if (sim.attackCooldownTimer > 0) sim.attackCooldownTimer = Math.max(0, sim.attackCooldownTimer - dt);
     if (sim.dashCooldownTimer > 0) sim.dashCooldownTimer = Math.max(0, sim.dashCooldownTimer - dt);
     if (sim.playerHitTimer > 0) sim.playerHitTimer = Math.max(0, sim.playerHitTimer - dt);
-    if (sim.enemyCooldownTimer > 0) sim.enemyCooldownTimer = Math.max(0, sim.enemyCooldownTimer - dt);
-    if (sim.enemyHitFlashTimer > 0) sim.enemyHitFlashTimer = Math.max(0, sim.enemyHitFlashTimer - dt);
+    if (sim.potionNoticeTimer > 0) sim.potionNoticeTimer = Math.max(0, sim.potionNoticeTimer - dt);
+    if (sim.potionPickupNoticeTimer > 0) sim.potionPickupNoticeTimer = Math.max(0, sim.potionPickupNoticeTimer - dt);
+    if (sim.levelUpNoticeTimer > 0) sim.levelUpNoticeTimer = Math.max(0, sim.levelUpNoticeTimer - dt);
+    if (sim.checkpointNoticeTimer > 0) sim.checkpointNoticeTimer = Math.max(0, sim.checkpointNoticeTimer - dt);
     if (sim.shakeIntensity > 0) sim.shakeIntensity = Math.max(0, sim.shakeIntensity - dt * 1.8);
+    if (playerAlive) {
+      sim.timeSinceCombatAction += dt;
+    }
+
+    for (let i = 0; i < sim.enemies.length; i++) {
+      const e = sim.enemies[i];
+      if (e.cooldownTimer > 0) e.cooldownTimer = Math.max(0, e.cooldownTimer - dt);
+      if (e.hitFlashTimer > 0) e.hitFlashTimer = Math.max(0, e.hitFlashTimer - dt);
+    }
 
     // 2. Gather movement input (Virtual Joystick + WASD / Arrow Keys)
     let inputX = joystickRef.current.x;
@@ -242,13 +660,26 @@ const GameWorld: React.FC<GameWorldProps> = ({
       inputY /= inputLen;
     }
 
-    // Map screen-space input onto 45-degree isometric camera axes:
-    // Screen Right (+inputX) => World (+0.7071, -0.7071)
-    // Screen Up (-inputY)    => World (-0.7071, -0.7071)
     const isoScale = Math.SQRT1_2;
     const moveWorldX = (inputX + inputY) * isoScale;
     const moveWorldZ = (-inputX + inputY) * isoScale;
     const hasMoveInput = inputLen > 0.12;
+
+    // Helper: find nearest living enemy within distance
+    const findNearestLivingEnemy = (maxDist: number): EnemyRuntime | null => {
+      let best: EnemyRuntime | null = null;
+      let bestDist = maxDist;
+      for (let i = 0; i < sim.enemies.length; i++) {
+        const e = sim.enemies[i];
+        if (e.hp <= 0) continue;
+        const d = Math.hypot(e.x - sim.playerPos.x, e.z - sim.playerPos.z);
+        if (d < bestDist) {
+          bestDist = d;
+          best = e;
+        }
+      }
+      return best;
+    };
 
     // 3. Handle Player Attack request (auto-faces nearest living enemy)
     if (attackRequestedRef.current) {
@@ -258,16 +689,15 @@ const GameWorld: React.FC<GameWorldProps> = ({
         sim.attackTimer = 0;
         sim.attackCooldownTimer = ATTACK_COOLDOWN;
         sim.hasDealtSwingDamage = false;
+        sim.timeSinceCombatAction = 0;
         soundManager.playSwordSwing();
 
-        // Auto-face nearest enemy within generous engagement radius
-        if (enemyAlive) {
-          const dx = sim.enemyPos.x - sim.playerPos.x;
-          const dz = sim.enemyPos.z - sim.playerPos.z;
-          const dist = Math.hypot(dx, dz);
-          if (dist < 6.5) {
-            sim.playerRot = Math.atan2(dx, dz);
-          }
+        const targetEnemy = findNearestLivingEnemy(6.5);
+        if (targetEnemy) {
+          sim.playerRot = Math.atan2(
+            targetEnemy.x - sim.playerPos.x,
+            targetEnemy.z - sim.playerPos.z
+          );
         }
       }
     }
@@ -280,7 +710,9 @@ const GameWorld: React.FC<GameWorldProps> = ({
         sim.isAttacking = false;
         sim.dashTimer = DASH_DURATION;
         sim.dashCooldownTimer = DASH_COOLDOWN;
+        sim.playerMagic = Math.max(0, sim.playerMagic - DASH_MAGIC_COST);
         soundManager.playDash();
+        forceHudSync = true;
 
         if (hasMoveInput) {
           const norm = Math.hypot(moveWorldX, moveWorldZ) || 1;
@@ -295,42 +727,68 @@ const GameWorld: React.FC<GameWorldProps> = ({
       }
     }
 
-    // 5. Player Attack Execution & Movement (non-exclusive: player can move while swinging)
+    // 4b. Handle Player HEAL request (restores 40% max HP, capped at max HP)
+    if (healRequestedRef.current) {
+      healRequestedRef.current = false;
+      const healMaxHp = getMaxHealthForLevel(sim.level);
+      if (playerAlive && sim.healingPotions > 0 && sim.playerHp < healMaxHp) {
+        sim.healingPotions -= 1;
+        sim.playerHp = Math.min(healMaxHp, sim.playerHp + healMaxHp * POTION_HEAL_RATIO);
+        sim.potionNoticeTimer = 2.2;
+        soundManager.playDash();
+        spawnParticles(sim.playerPos.x, 1.1, sim.playerPos.z, '#ef4444', 16);
+        spawnParticles(sim.playerPos.x, 1.25, sim.playerPos.z, '#fca5a5', 8);
+        forceHudSync = true;
+      }
+    }
+
+    const unlockedGates: GateUnlockState = {
+      iron: sim.doorUnlocked,
+      sanctum: sim.sanctumUnlocked,
+      warden: sim.wardenUnlocked,
+    };
+
+    // 5. Player Attack Execution & Movement (non-exclusive: move & swing simultaneously)
     if (playerAlive) {
       if (sim.isAttacking) {
         sim.attackTimer += dt;
         const progress = Math.min(1, sim.attackTimer / ATTACK_DURATION);
 
-        // Trigger impact check at apex of overhead swing
         if (progress >= 0.44 && !sim.hasDealtSwingDamage) {
           sim.hasDealtSwingDamage = true;
           const ringX = sim.playerPos.x + Math.sin(sim.playerRot) * 1.1;
           const ringZ = sim.playerPos.z + Math.cos(sim.playerRot) * 1.1;
           sim.impactRing = { x: ringX, z: ringZ, progress: 0.01 };
 
-          if (enemyAlive) {
-            const dx = sim.enemyPos.x - sim.playerPos.x;
-            const dz = sim.enemyPos.z - sim.playerPos.z;
-            const dist = Math.hypot(dx, dz);
-            const fwdX = Math.sin(sim.playerRot);
-            const fwdZ = Math.cos(sim.playerRot);
-            const dot = dist > 0.001 ? (dx / dist) * fwdX + (dz / dist) * fwdZ : 1;
+          const fwdX = Math.sin(sim.playerRot);
+          const fwdZ = Math.cos(sim.playerRot);
 
-            if (dist <= 2.45 && (dot >= 0.1 || dist < 1.2)) {
+          // Check hits against all living enemies in swing arc
+          for (let i = 0; i < sim.enemies.length; i++) {
+            const enemy = sim.enemies[i];
+            if (enemy.hp <= 0) continue;
+
+            const dx = enemy.x - sim.playerPos.x;
+            const dz = enemy.z - sim.playerPos.z;
+            const dist = Math.hypot(dx, dz);
+            const dot = dist > 0.001 ? (dx / dist) * fwdX + (dz / dist) * fwdZ : 1;
+            const reach = 2.45 + (enemy.scale - 1) * 0.45;
+
+            if (dist <= reach && (dot >= 0.08 || dist < 1.25)) {
               const isCrit = Math.random() < 0.25;
               const dmg = isCrit
                 ? 34 + Math.floor(Math.random() * 8)
                 : 22 + Math.floor(Math.random() * 7);
 
-              sim.enemyHp = Math.max(0, sim.enemyHp - dmg);
-              sim.enemyHitFlashTimer = 0.18;
-              sim.shakeIntensity = isCrit ? 0.28 : 0.16;
+              enemy.hp = Math.max(0, enemy.hp - dmg);
+              enemy.hitFlashTimer = 0.18;
+              sim.shakeIntensity = Math.max(sim.shakeIntensity, isCrit ? 0.28 : 0.16);
 
               soundManager.playHitSound(isCrit);
               spawnParticles(
-                sim.enemyPos.x,
-                1.05,
-                sim.enemyPos.z,
+                enemy.x,
+                1.05 * enemy.scale,
+                enemy.z,
                 isCrit ? '#fbbf24' : '#e5e7eb',
                 isCrit ? 16 : 10
               );
@@ -338,37 +796,66 @@ const GameWorld: React.FC<GameWorldProps> = ({
               sim.damageNumbers.push({
                 id: `${Date.now()}-${Math.random()}`,
                 value: dmg,
-                x: sim.enemyPos.x + (Math.random() - 0.5) * 0.3,
-                y: 1.9,
-                z: sim.enemyPos.z,
+                x: enemy.x + (Math.random() - 0.5) * 0.3,
+                y: 1.85 * enemy.scale,
+                z: enemy.z,
                 color: isCrit ? '#fbbf24' : '#ffffff',
                 lifetime: 0.9,
                 isCrit,
               });
 
-              // Knockback enemy away from player
               if (dist > 0.001) {
+                const kbForce =
+                  enemy.variant === 'guardian' || enemy.variant === 'dreadlord'
+                    ? 0.25
+                    : enemy.variant === 'brute'
+                      ? 0.32
+                      : 0.48;
                 const kb = resolveMovementCollision(
-                  sim.enemyPos.x + (dx / dist) * 0.48,
-                  sim.enemyPos.z + (dz / dist) * 0.48,
-                  0.5
+                  enemy.x + (dx / dist) * kbForce,
+                  enemy.z + (dz / dist) * kbForce,
+                  0.5 * enemy.scale,
+                  sim.destroyedObstacles,
+                  unlockedGates
                 );
-                sim.enemyPos.x = kb.x;
-                sim.enemyPos.z = kb.z;
+                enemy.x = kb.x;
+                enemy.z = kb.z;
               }
 
-              if (sim.enemyHp <= 0) {
-                sim.enemyState = 'dead';
-                if (!sim.victoryTriggered) {
-                  sim.victoryTriggered = true;
+              if (enemy.hp <= 0) {
+                enemy.state = 'dead';
+                if (!enemy.deathSoundPlayed) {
+                  enemy.deathSoundPlayed = true;
                   soundManager.playBoneCrumble();
-                  setTimeout(() => soundManager.playVictoryFanfare(), 220);
-                  spawnParticles(sim.enemyPos.x, 0.8, sim.enemyPos.z, '#d6cbb5', 20);
+                  spawnParticles(enemy.x, 0.8, enemy.z, '#d6cbb5', 18);
                 }
-              } else if (sim.enemyState !== 'attack') {
-                sim.enemyState = 'hurt';
-                sim.enemyHurtTimer = 0.22;
+                if (!enemy.xpAwarded) {
+                  enemy.xpAwarded = true;
+                  awardXp(getEnemyXpReward(enemy.variant));
+                }
+              } else if (enemy.state !== 'attack') {
+                enemy.state = 'hurt';
+                enemy.hurtTimer = 0.22;
               }
+            }
+          }
+
+          // Check hits against intact destructible barrels
+          for (let i = 0; i < DUNGEON_OBSTACLES.length; i++) {
+            const obs = DUNGEON_OBSTACLES[i];
+            if (!obs.destructible || sim.destroyedObstacles.has(obs.id)) continue;
+
+            const dx = obs.position[0] - sim.playerPos.x;
+            const dz = obs.position[2] - sim.playerPos.z;
+            const dist = Math.hypot(dx, dz);
+            const dot = dist > 0.001 ? (dx / dist) * fwdX + (dz / dist) * fwdZ : 1;
+
+            if (dist <= 2.25 && (dot >= 0.0 || dist < 1.15)) {
+              sim.destroyedObstacles.add(obs.id);
+              sim.shakeIntensity = Math.max(sim.shakeIntensity, 0.1);
+              soundManager.playHitSound(false);
+              spawnParticles(obs.position[0], 0.55, obs.position[2], '#b45309', 12);
+              spawnParticles(obs.position[0], 0.65, obs.position[2], '#78350f', 8);
             }
           }
         }
@@ -383,7 +870,13 @@ const GameWorld: React.FC<GameWorldProps> = ({
         sim.dashTimer -= dt;
         const nextX = sim.playerPos.x + sim.dashDir.x * DASH_SPEED * dt;
         const nextZ = sim.playerPos.z + sim.dashDir.z * DASH_SPEED * dt;
-        const resolved = resolveMovementCollision(nextX, nextZ, 0.48);
+        const resolved = resolveMovementCollision(
+          nextX,
+          nextZ,
+          0.48,
+          sim.destroyedObstacles,
+          unlockedGates
+        );
         sim.playerPos.x = resolved.x;
         sim.playerPos.z = resolved.z;
         sim.isMoving = true;
@@ -394,15 +887,17 @@ const GameWorld: React.FC<GameWorldProps> = ({
       } else if (hasMoveInput) {
         const nextX = sim.playerPos.x + moveWorldX * PLAYER_SPEED * dt;
         const nextZ = sim.playerPos.z + moveWorldZ * PLAYER_SPEED * dt;
-        const resolved = resolveMovementCollision(nextX, nextZ, 0.48);
+        const resolved = resolveMovementCollision(
+          nextX,
+          nextZ,
+          0.48,
+          sim.destroyedObstacles,
+          unlockedGates
+        );
         sim.playerPos.x = resolved.x;
         sim.playerPos.z = resolved.z;
 
-        // Preserve auto-facing toward nearby enemy during an active swing; otherwise face movement direction
-        const hasLockedEnemy =
-          sim.isAttacking &&
-          enemyAlive &&
-          Math.hypot(sim.enemyPos.x - sim.playerPos.x, sim.enemyPos.z - sim.playerPos.z) < 6.5;
+        const hasLockedEnemy = sim.isAttacking && findNearestLivingEnemy(6.5) !== null;
         if (!hasLockedEnemy) {
           sim.playerRot = Math.atan2(moveWorldX, moveWorldZ);
         }
@@ -410,62 +905,259 @@ const GameWorld: React.FC<GameWorldProps> = ({
       } else {
         sim.isMoving = false;
       }
+
+      // Check Key pickup in Room 2
+      if (!sim.hasKey) {
+        const keyDist = Math.hypot(
+          sim.playerPos.x - KEY_POSITION[0],
+          sim.playerPos.z - KEY_POSITION[2]
+        );
+        if (keyDist <= 1.2) {
+          sim.hasKey = true;
+          soundManager.playDash();
+          spawnParticles(KEY_POSITION[0], 0.9, KEY_POSITION[2], '#fbbf24', 16);
+          if (!sim.keyXpAwarded) {
+            sim.keyXpAwarded = true;
+            awardXp(XP_REWARDS.dungeonKey);
+          }
+        }
+      }
+
+      // Check Healing Potion pickups (add to player's potion inventory regardless of current HP)
+      for (let i = 0; i < POTION_SPAWNS.length; i++) {
+        const potion = POTION_SPAWNS[i];
+        if (sim.collectedPotions.has(potion.id)) continue;
+        const potionDist = Math.hypot(
+          sim.playerPos.x - potion.position[0],
+          sim.playerPos.z - potion.position[2]
+        );
+        if (potionDist <= 1.15) {
+          sim.collectedPotions.add(potion.id);
+          sim.healingPotions += 1;
+          sim.potionPickupNoticeTimer = 2.0;
+          soundManager.playDash();
+          spawnParticles(
+            potion.position[0],
+            0.75,
+            potion.position[2],
+            '#ef4444',
+            16
+          );
+          forceHudSync = true;
+        }
+      }
+
+      // Check Locked Gate unlock at Room 2 -> Room 3 doorway
+      if (sim.hasKey && !sim.doorUnlocked) {
+        const gateDist = Math.hypot(
+          sim.playerPos.x - LOCKED_GATE_POSITION[0],
+          sim.playerPos.z - LOCKED_GATE_POSITION[2]
+        );
+        if (gateDist <= 2.35) {
+          sim.doorUnlocked = true;
+          unlockedGates.iron = true;
+          sim.shakeIntensity = Math.max(sim.shakeIntensity, 0.16);
+          soundManager.playDash();
+          spawnParticles(
+            LOCKED_GATE_POSITION[0],
+            1.3,
+            LOCKED_GATE_POSITION[2],
+            '#34d399',
+            18
+          );
+          forceHudSync = true;
+        }
+      }
+
+      // Unlock Room 3 -> Room 4 Sanctum Gate once Skeleton Guardian falls
+      const guardian = sim.enemies.find((e) => e.id === 'r3-guardian');
+      if (guardian && guardian.hp <= 0 && !sim.sanctumUnlocked) {
+        sim.sanctumUnlocked = true;
+        unlockedGates.sanctum = true;
+        soundManager.playDash();
+        spawnParticles(
+          SANCTUM_GATE_POSITION[0],
+          1.3,
+          SANCTUM_GATE_POSITION[2],
+          '#34d399',
+          20
+        );
+        forceHudSync = true;
+      }
+
+      // Unlock Room 7 -> Room 8 Warden Gate once Abyssal Dreadlord falls
+      const dreadlord = sim.enemies.find((e) => e.id === 'r7-dreadlord');
+      if (dreadlord && dreadlord.hp <= 0 && !sim.wardenUnlocked) {
+        sim.wardenUnlocked = true;
+        unlockedGates.warden = true;
+        soundManager.playDash();
+        spawnParticles(
+          WARDEN_GATE_POSITION[0],
+          1.3,
+          WARDEN_GATE_POSITION[2],
+          '#38bdf8',
+          22
+        );
+        forceHudSync = true;
+      }
+
+      // Check Exit Portal completion in Room 8 (awaken once Room 8 defenders fall)
+      const room8Cleared = sim.enemies
+        .filter((e) => e.roomId === 8)
+        .every((e) => e.hp <= 0);
+      if (room8Cleared && !sim.dungeonCompleted) {
+        const portalDist = Math.hypot(
+          sim.playerPos.x - EXIT_PORTAL_POSITION[0],
+          sim.playerPos.z - EXIT_PORTAL_POSITION[2]
+        );
+        if (portalDist <= 1.35) {
+          sim.dungeonCompleted = true;
+          sim.isMoving = false;
+          soundManager.playVictoryFanfare();
+          spawnParticles(
+            EXIT_PORTAL_POSITION[0],
+            1.1,
+            EXIT_PORTAL_POSITION[2],
+            '#38bdf8',
+            26
+          );
+          if (!sim.completionXpAwarded) {
+            sim.completionXpAwarded = true;
+            awardXp(XP_REWARDS.dungeonComplete);
+          }
+        }
+      }
+
+      // Activate first checkpoint immediately upon entering Room 3 (before fighting the Skeleton Guardian)
+      const frameRoom = getRoomIdForPosition(sim.playerPos.x, sim.playerPos.z);
+      sim.discoveredRooms.add(frameRoom);
+      if (frameRoom >= 3 && sim.checkpointRoom === null) {
+        sim.checkpointRoom = 3;
+        sim.checkpointNoticeTimer = 2.4;
+        forceHudSync = true;
+      }
     } else {
       sim.isMoving = false;
     }
 
-    // 6. Actor-vs-Actor separation (Player & living Skeleton shouldn't clip inside each other)
-    if (playerAlive && enemyAlive) {
-      const dx = sim.playerPos.x - sim.enemyPos.x;
-      const dz = sim.playerPos.z - sim.enemyPos.z;
-      const distSq = dx * dx + dz * dz;
-      const minSep = 0.96;
-      if (distSq < minSep * minSep && distSq > 0.0001) {
-        const dist = Math.sqrt(distSq);
-        const push = (minSep - dist) * 0.5;
-        const nx = dx / dist;
-        const nz = dz / dist;
-        const pRes = resolveMovementCollision(
-          sim.playerPos.x + nx * push,
-          sim.playerPos.z + nz * push,
-          0.48
-        );
-        const eRes = resolveMovementCollision(
-          sim.enemyPos.x - nx * push,
-          sim.enemyPos.z - nz * push,
-          0.5
-        );
-        sim.playerPos.x = pRes.x;
-        sim.playerPos.z = pRes.z;
-        sim.enemyPos.x = eRes.x;
-        sim.enemyPos.z = eRes.z;
+    // 6. Actor Separation (Player vs Enemies & Enemy vs Enemy)
+    if (playerAlive) {
+      for (let i = 0; i < sim.enemies.length; i++) {
+        const enemy = sim.enemies[i];
+        if (enemy.hp <= 0) continue;
+
+        const dx = sim.playerPos.x - enemy.x;
+        const dz = sim.playerPos.z - enemy.z;
+        const distSq = dx * dx + dz * dz;
+        const minSep = 0.52 + 0.48 * enemy.scale;
+        if (distSq < minSep * minSep && distSq > 0.0001) {
+          const dist = Math.sqrt(distSq);
+          const push = (minSep - dist) * 0.5;
+          const nx = dx / dist;
+          const nz = dz / dist;
+          const pRes = resolveMovementCollision(
+            sim.playerPos.x + nx * push,
+            sim.playerPos.z + nz * push,
+            0.48,
+            sim.destroyedObstacles,
+            unlockedGates
+          );
+          const eRes = resolveMovementCollision(
+            enemy.x - nx * push,
+            enemy.z - nz * push,
+            0.5 * enemy.scale,
+            sim.destroyedObstacles,
+            unlockedGates
+          );
+          sim.playerPos.x = pRes.x;
+          sim.playerPos.z = pRes.z;
+          enemy.x = eRes.x;
+          enemy.z = eRes.z;
+        }
       }
     }
 
-    // 7. Skeleton Warrior AI State Machine
-    if (enemyAlive && playerAlive) {
-      const dx = sim.playerPos.x - sim.enemyPos.x;
-      const dz = sim.playerPos.z - sim.enemyPos.z;
+    for (let i = 0; i < sim.enemies.length; i++) {
+      const a = sim.enemies[i];
+      if (a.hp <= 0) continue;
+      for (let j = i + 1; j < sim.enemies.length; j++) {
+        const b = sim.enemies[j];
+        if (b.hp <= 0) continue;
+        const dx = a.x - b.x;
+        const dz = a.z - b.z;
+        const distSq = dx * dx + dz * dz;
+        const minSep = 1.0;
+        if (distSq < minSep * minSep && distSq > 0.0001) {
+          const dist = Math.sqrt(distSq);
+          const push = (minSep - dist) * 0.5;
+          const nx = dx / dist;
+          const nz = dz / dist;
+          const aRes = resolveMovementCollision(
+            a.x + nx * push,
+            a.z + nz * push,
+            0.5 * a.scale,
+            sim.destroyedObstacles,
+            unlockedGates
+          );
+          const bRes = resolveMovementCollision(
+            b.x - nx * push,
+            b.z - nz * push,
+            0.5 * b.scale,
+            sim.destroyedObstacles,
+            unlockedGates
+          );
+          a.x = aRes.x;
+          a.z = aRes.z;
+          b.x = bRes.x;
+          b.z = bRes.z;
+        }
+      }
+    }
+
+    // 7. Enemy AI State Machines
+    for (let i = 0; i < sim.enemies.length; i++) {
+      const enemy = sim.enemies[i];
+      if (enemy.hp <= 0) {
+        enemy.state = 'dead';
+        continue;
+      }
+      if (!playerAlive) {
+        enemy.state = 'idle';
+        continue;
+      }
+
+      const dx = sim.playerPos.x - enemy.x;
+      const dz = sim.playerPos.z - enemy.z;
       const dist = Math.hypot(dx, dz);
 
-      if (sim.enemyState === 'hurt') {
-        sim.enemyHurtTimer -= dt;
-        if (sim.enemyHurtTimer <= 0) {
-          sim.enemyState = 'chase';
+      if (enemy.state === 'hurt') {
+        enemy.hurtTimer -= dt;
+        if (enemy.hurtTimer <= 0) {
+          enemy.state = 'chase';
         }
-      } else if (sim.enemyState === 'attack') {
-        sim.enemyAttackTimer += dt;
-        const eProg = Math.min(1, sim.enemyAttackTimer / ENEMY_ATTACK_DURATION);
+      } else if (enemy.state === 'attack') {
+        enemy.attackTimer += dt;
+        const eProg = Math.min(1, enemy.attackTimer / ENEMY_ATTACK_DURATION);
 
-        if (eProg >= 0.6 && !sim.hasDealtEnemyDamage) {
-          sim.hasDealtEnemyDamage = true;
+        if (eProg >= 0.6 && !enemy.hasDealtDamage) {
+          enemy.hasDealtDamage = true;
           soundManager.playSkeletonAttack();
 
-          if (dist <= 2.15 && !sim.isDashing) {
-            const enemyDmg = 12 + Math.floor(Math.random() * 5);
+          const hitReach = enemy.attackRange + 0.35;
+          if (dist <= hitReach && !sim.isDashing) {
+            const enemyDmg =
+              enemy.damageMin +
+              Math.floor(Math.random() * (enemy.damageMax - enemy.damageMin + 1));
             sim.playerHp = Math.max(0, sim.playerHp - enemyDmg);
+            sim.timeSinceCombatAction = 0;
+            if (sim.playerHp <= 0) {
+              forceHudSync = true;
+            }
             sim.playerHitTimer = 0.22;
-            sim.shakeIntensity = 0.22;
+            sim.shakeIntensity = Math.max(
+              sim.shakeIntensity,
+              enemy.variant === 'dreadlord' || enemy.variant === 'guardian' ? 0.32 : 0.2
+            );
             soundManager.playPlayerHurt();
             spawnParticles(sim.playerPos.x, 1.0, sim.playerPos.z, '#ef4444', 10);
 
@@ -481,37 +1173,61 @@ const GameWorld: React.FC<GameWorldProps> = ({
           }
         }
 
-        if (sim.enemyAttackTimer >= ENEMY_ATTACK_DURATION) {
-          sim.enemyState = 'chase';
-          sim.enemyCooldownTimer = ENEMY_ATTACK_COOLDOWN;
+        if (enemy.attackTimer >= ENEMY_ATTACK_DURATION) {
+          enemy.state = 'chase';
+          enemy.cooldownTimer = ENEMY_ATTACK_COOLDOWN;
         }
       } else {
-        // Idle or Chase
-        if (dist <= ENEMY_ATTACK_RANGE && sim.enemyCooldownTimer <= 0) {
-          sim.enemyState = 'attack';
-          sim.enemyAttackTimer = 0;
-          sim.hasDealtEnemyDamage = false;
-          sim.enemyRot = Math.atan2(dx, dz);
-        } else if (dist <= ENEMY_DETECT_RANGE) {
-          sim.enemyState = 'chase';
-          sim.enemyRot = Math.atan2(dx, dz);
-          if (dist > ENEMY_ATTACK_RANGE * 0.88) {
+        if (dist <= enemy.attackRange && enemy.cooldownTimer <= 0) {
+          enemy.state = 'attack';
+          enemy.attackTimer = 0;
+          enemy.hasDealtDamage = false;
+          enemy.rot = Math.atan2(dx, dz);
+        } else if (dist <= enemy.detectRange) {
+          enemy.state = 'chase';
+          enemy.rot = Math.atan2(dx, dz);
+          if (dist > enemy.attackRange * 0.88) {
             const nx = dx / (dist || 1);
             const nz = dz / (dist || 1);
             const nextEnemy = resolveMovementCollision(
-              sim.enemyPos.x + nx * ENEMY_SPEED * dt,
-              sim.enemyPos.z + nz * ENEMY_SPEED * dt,
-              0.5
+              enemy.x + nx * enemy.speed * dt,
+              enemy.z + nz * enemy.speed * dt,
+              0.5 * enemy.scale,
+              sim.destroyedObstacles,
+              unlockedGates
             );
-            sim.enemyPos.x = nextEnemy.x;
-            sim.enemyPos.z = nextEnemy.z;
+            enemy.x = nextEnemy.x;
+            enemy.z = nextEnemy.z;
           }
         } else {
-          sim.enemyState = 'idle';
+          enemy.state = 'idle';
         }
       }
-    } else if (enemyAlive && !playerAlive) {
-      sim.enemyState = 'idle';
+    }
+
+    // 7b. Health & Magic Regeneration (paused/half-speed during combat; capped at max HP/Magic)
+    const hasAggroedEnemy = sim.enemies.some(
+      (e) => e.hp > 0 && (e.state === 'chase' || e.state === 'attack' || e.state === 'hurt')
+    );
+    const inCombat = hasAggroedEnemy || sim.timeSinceCombatAction < HEALTH_REGEN_DELAY_SEC;
+    const regenMaxHp = getMaxHealthForLevel(sim.level);
+    let isHealthRegenerating = false;
+    let isMagicRegenerating = false;
+
+    if (playerAlive) {
+      if (!inCombat && sim.playerHp < regenMaxHp) {
+        sim.playerHp = Math.min(regenMaxHp, sim.playerHp + regenMaxHp * HEALTH_REGEN_RATE_PER_SEC * dt);
+        isHealthRegenerating = sim.playerHp < regenMaxHp;
+      }
+
+      if (sim.playerMagic < BASE_PLAYER_MAX_MAGIC) {
+        const magicRate = inCombat ? MAGIC_REGEN_RATE_IN_COMBAT : MAGIC_REGEN_RATE_OUT_OF_COMBAT;
+        sim.playerMagic = Math.min(
+          BASE_PLAYER_MAX_MAGIC,
+          sim.playerMagic + BASE_PLAYER_MAX_MAGIC * magicRate * dt
+        );
+        isMagicRegenerating = sim.playerMagic < BASE_PLAYER_MAX_MAGIC;
+      }
     }
 
     // 8. Update Impact Ring & Particles
@@ -542,9 +1258,12 @@ const GameWorld: React.FC<GameWorldProps> = ({
       }
     }
 
-    // 9. Fixed 45-degree Isometric Camera Follow with Subtle Impact Shake
-    sim.camTarget.x = THREE.MathUtils.damp(sim.camTarget.x, sim.playerPos.x * 0.55, 6, dt);
-    sim.camTarget.z = THREE.MathUtils.damp(sim.camTarget.z, sim.playerPos.z * 0.55, 6, dt);
+    // 9. Fixed 45-degree Isometric Camera Follow across all 8 rooms & both wings
+    const wingBlend = THREE.MathUtils.clamp((sim.playerPos.x - 7.5) / 9.0, 0, 1);
+    const wingCenterX = wingBlend * 24.0;
+    const targetCamX = wingCenterX + (sim.playerPos.x - wingCenterX) * 0.58;
+    sim.camTarget.x = THREE.MathUtils.damp(sim.camTarget.x, targetCamX, 6.5, dt);
+    sim.camTarget.z = THREE.MathUtils.damp(sim.camTarget.z, sim.playerPos.z, 6.5, dt);
 
     const shakeX = sim.shakeIntensity > 0 ? (Math.random() - 0.5) * sim.shakeIntensity : 0;
     const shakeY = sim.shakeIntensity > 0 ? (Math.random() - 0.5) * sim.shakeIntensity : 0;
@@ -556,6 +1275,10 @@ const GameWorld: React.FC<GameWorldProps> = ({
     );
     camera.lookAt(sim.camTarget.x, 0.7, sim.camTarget.z);
 
+    const portalActive = sim.enemies
+      .filter((e) => e.roomId === 8)
+      .every((e) => e.hp <= 0);
+
     // 10. Sync React visual props & HUD
     setRenderState({
       playerPos: [sim.playerPos.x, 0, sim.playerPos.z],
@@ -565,19 +1288,20 @@ const GameWorld: React.FC<GameWorldProps> = ({
       attackProgress: sim.isAttacking ? sim.attackTimer / ATTACK_DURATION : 0,
       isDashing: sim.isDashing,
       playerHit: sim.playerHitTimer > 0,
-      enemyPos: [sim.enemyPos.x, 0, sim.enemyPos.z],
-      enemyRot: sim.enemyRot,
-      enemyState: sim.enemyState,
-      enemyAttackProgress:
-        sim.enemyState === 'attack' ? sim.enemyAttackTimer / ENEMY_ATTACK_DURATION : 0,
-      enemyHit: sim.enemyHitFlashTimer > 0,
-      enemyHp: sim.enemyHp,
+      enemies: sim.enemies.map((e) => ({ ...e })),
+      destroyedObstacles: new Set(sim.destroyedObstacles),
+      hasKey: sim.hasKey,
+      collectedPotions: new Set(sim.collectedPotions),
+      doorUnlocked: sim.doorUnlocked,
+      sanctumUnlocked: sim.sanctumUnlocked,
+      wardenUnlocked: sim.wardenUnlocked,
+      portalActive,
       particles: [...sim.particles],
       impactRing: sim.impactRing ? { ...sim.impactRing } : null,
     });
 
     const now = state.clock.getElapsedTime();
-    if (now - lastHudSyncRef.current > 0.045) {
+    if (now - lastHudSyncRef.current > 0.045 || sim.dungeonCompleted || forceHudSync) {
       lastHudSyncRef.current = now;
       const projectedNums: ProjectedDamageNumber[] = sim.damageNumbers.map((dn) => {
         _projVec.set(dn.x, dn.y, dn.z).project(camera);
@@ -588,10 +1312,62 @@ const GameWorld: React.FC<GameWorldProps> = ({
         };
       });
 
+      const currentRoom = getRoomIdForPosition(sim.playerPos.x, sim.playerPos.z);
+      sim.discoveredRooms.add(currentRoom);
+      const nearestEnemy = findNearestLivingEnemy(11.0);
+      const enemiesDefeated = sim.enemies.filter((e) => e.hp <= 0).length;
+
       onHudSync({
         playerHp: sim.playerHp,
-        enemyHp: sim.enemyHp,
-        enemyDefeated: sim.enemyHp <= 0,
+        playerMaxHp: regenMaxHp,
+        playerMagic: sim.playerMagic,
+        playerMaxMagic: BASE_PLAYER_MAX_MAGIC,
+        healingPotions: sim.healingPotions,
+        inCombat,
+        isHealthRegenerating,
+        isMagicRegenerating,
+        playerXp: sim.xp,
+        playerLevel: sim.level,
+        playerPos: { x: sim.playerPos.x, z: sim.playerPos.z },
+        playerRot: sim.playerRot,
+        currentRoom,
+        discoveredRooms: Array.from(sim.discoveredRooms),
+        enemies: sim.enemies.map((e) => ({
+          id: e.id,
+          roomId: e.roomId,
+          x: e.x,
+          z: e.z,
+          hp: e.hp,
+          variant: e.variant,
+          name: e.name,
+        })),
+        enemiesDefeated,
+        totalEnemies: sim.enemies.length,
+        objectiveText: getObjectiveText(
+          currentRoom,
+          sim.enemies,
+          sim.hasKey,
+          sim.doorUnlocked,
+          sim.sanctumUnlocked,
+          sim.wardenUnlocked,
+          portalActive
+        ),
+        hasKey: sim.hasKey,
+        collectedPotionIds: Array.from(sim.collectedPotions),
+        doorUnlocked: sim.doorUnlocked,
+        sanctumUnlocked: sim.sanctumUnlocked,
+        wardenUnlocked: sim.wardenUnlocked,
+        portalActive,
+        showHealthRestored: sim.potionNoticeTimer > 0,
+        showPotionPickedUp: sim.potionPickupNoticeTimer > 0,
+        showLevelUp: sim.levelUpNoticeTimer > 0,
+        levelUpLevel: sim.levelUpDisplayLevel,
+        checkpointRoom: sim.checkpointRoom,
+        showCheckpointActivated: sim.checkpointNoticeTimer > 0,
+        activeEnemyName: nearestEnemy ? nearestEnemy.name : null,
+        activeEnemyHp: nearestEnemy ? nearestEnemy.hp : 0,
+        activeEnemyMaxHp: nearestEnemy ? nearestEnemy.maxHealth : 0,
+        dungeonCompleted: sim.dungeonCompleted,
         playerDefeated: sim.playerHp <= 0,
         attackCooldownRatio: sim.attackCooldownTimer / ATTACK_COOLDOWN,
         dashCooldownRatio: sim.dashCooldownTimer / DASH_COOLDOWN,
@@ -602,7 +1378,17 @@ const GameWorld: React.FC<GameWorldProps> = ({
 
   return (
     <>
-      <DungeonEnvironment />
+      <DungeonEnvironment
+        destroyedObstacleIds={renderState.destroyedObstacles}
+        hasKey={renderState.hasKey}
+        collectedPotions={renderState.collectedPotions}
+        doorUnlocked={renderState.doorUnlocked}
+        sanctumUnlocked={renderState.sanctumUnlocked}
+        wardenUnlocked={renderState.wardenUnlocked}
+        portalActive={renderState.portalActive}
+        playerX={renderState.playerPos[0]}
+        playerZ={renderState.playerPos[2]}
+      />
 
       <PlayerCharacter
         position={renderState.playerPos}
@@ -612,17 +1398,26 @@ const GameWorld: React.FC<GameWorldProps> = ({
         attackProgress={renderState.attackProgress}
         isDashing={renderState.isDashing}
         isHit={renderState.playerHit}
+        isPaused={isPaused}
       />
 
-      <SkeletonEnemy
-        position={renderState.enemyPos}
-        rotationY={renderState.enemyRot}
-        state={renderState.enemyState}
-        attackProgress={renderState.enemyAttackProgress}
-        isHit={renderState.enemyHit}
-        health={renderState.enemyHp}
-        maxHealth={ENEMY_MAX_HP}
-      />
+      {renderState.enemies.map((enemy) => (
+        <SkeletonEnemy
+          key={enemy.id}
+          position={[enemy.x, 0, enemy.z]}
+          rotationY={enemy.rot}
+          state={enemy.state}
+          attackProgress={
+            enemy.state === 'attack' ? enemy.attackTimer / ENEMY_ATTACK_DURATION : 0
+          }
+          isHit={enemy.hitFlashTimer > 0}
+          health={enemy.hp}
+          maxHealth={enemy.maxHealth}
+          variant={enemy.variant}
+          scale={enemy.scale}
+          isPaused={isPaused}
+        />
+      ))}
 
       <CombatParticles3D
         particles={renderState.particles}
@@ -665,50 +1460,167 @@ export default function App() {
   const keysRef = useRef<Record<string, boolean>>({});
   const attackRequestedRef = useRef(false);
   const dashRequestedRef = useRef(false);
+  const healRequestedRef = useRef(false);
+  const characterXpRef = useRef(0);
+  const isPausedRef = useRef(false);
+  const canPauseRef = useRef(true);
 
   const [resetCounter, setResetCounter] = useState(0);
+  const [checkpointCounter, setCheckpointCounter] = useState(0);
   const [isMuted, setIsMuted] = useState(soundManager.getMuted());
-  const [hudState, setHudState] = useState({
-    playerHp: PLAYER_MAX_HP,
-    enemyHp: ENEMY_MAX_HP,
-    enemyDefeated: false,
+  const [isPaused, setIsPaused] = useState(false);
+  const [hudState, setHudState] = useState<HudSyncPayload>({
+    playerHp: BASE_PLAYER_MAX_HP,
+    playerMaxHp: BASE_PLAYER_MAX_HP,
+    playerMagic: BASE_PLAYER_MAX_MAGIC,
+    playerMaxMagic: BASE_PLAYER_MAX_MAGIC,
+    healingPotions: STARTING_HEALING_POTIONS,
+    inCombat: false,
+    isHealthRegenerating: false,
+    isMagicRegenerating: false,
+    playerXp: 0,
+    playerLevel: 1,
+    playerPos: { x: PLAYER_SPAWN[0], z: PLAYER_SPAWN[1] },
+    playerRot: Math.PI,
+    currentRoom: 1,
+    discoveredRooms: [1],
+    enemies: INITIAL_ENEMY_SPAWNS.map((e) => ({
+      id: e.id,
+      roomId: e.roomId,
+      x: e.position[0],
+      z: e.position[1],
+      hp: e.maxHealth,
+      variant: e.variant,
+      name: e.name,
+    })),
+    enemiesDefeated: 0,
+    totalEnemies: INITIAL_ENEMY_SPAWNS.length,
+    objectiveText: 'Defeat the Crypt Skeleton & head north',
+    hasKey: false,
+    collectedPotionIds: [],
+    doorUnlocked: false,
+    sanctumUnlocked: false,
+    wardenUnlocked: false,
+    portalActive: false,
+    showHealthRestored: false,
+    showPotionPickedUp: false,
+    showLevelUp: false,
+    levelUpLevel: 1,
+    checkpointRoom: null,
+    showCheckpointActivated: false,
+    activeEnemyName: INITIAL_ENEMY_SPAWNS[0].name,
+    activeEnemyHp: INITIAL_ENEMY_SPAWNS[0].maxHealth,
+    activeEnemyMaxHp: INITIAL_ENEMY_SPAWNS[0].maxHealth,
+    dungeonCompleted: false,
     playerDefeated: false,
     attackCooldownRatio: 0,
     dashCooldownRatio: 0,
-    damageNumbers: [] as ProjectedDamageNumber[],
+    damageNumbers: [],
   });
+
+  canPauseRef.current = !(hudState.dungeonCompleted || hudState.playerDefeated);
+
+  const clearActiveInputs = useCallback(() => {
+    joystickRef.current = { x: 0, y: 0 };
+    keysRef.current = {};
+    attackRequestedRef.current = false;
+    dashRequestedRef.current = false;
+    healRequestedRef.current = false;
+  }, []);
 
   const handleInteract = useCallback(() => {
     soundManager.enableAudio();
   }, []);
 
+  const handlePause = useCallback(() => {
+    if (!canPauseRef.current || isPausedRef.current) return;
+    isPausedRef.current = true;
+    clearActiveInputs();
+    setIsPaused(true);
+  }, [clearActiveInputs]);
+
+  const handleResume = useCallback(() => {
+    clearActiveInputs();
+    isPausedRef.current = false;
+    setIsPaused(false);
+  }, [clearActiveInputs]);
+
   const handleMove = useCallback((vec: Vector2D) => {
+    if (isPausedRef.current) {
+      joystickRef.current = { x: 0, y: 0 };
+      return;
+    }
     joystickRef.current = vec;
   }, []);
 
   const handleAttack = useCallback(() => {
+    if (isPausedRef.current) return;
     attackRequestedRef.current = true;
   }, []);
 
   const handleDash = useCallback(() => {
+    if (isPausedRef.current) return;
     dashRequestedRef.current = true;
   }, []);
 
-  const handleRestart = useCallback(() => {
-    joystickRef.current = { x: 0, y: 0 };
-    attackRequestedRef.current = false;
-    dashRequestedRef.current = false;
-    setResetCounter((c) => c + 1);
+  const handleHeal = useCallback(() => {
+    if (isPausedRef.current) return;
+    healRequestedRef.current = true;
   }, []);
+
+  const handleContinueFromCheckpoint = useCallback(() => {
+    clearActiveInputs();
+    isPausedRef.current = false;
+    setIsPaused(false);
+    setCheckpointCounter((c) => c + 1);
+  }, [clearActiveInputs]);
+
+  const handleRestart = useCallback(() => {
+    clearActiveInputs();
+    isPausedRef.current = false;
+    setIsPaused(false);
+    setResetCounter((c) => c + 1);
+  }, [clearActiveInputs]);
 
   const handleToggleMute = useCallback(() => {
     const muted = soundManager.toggleMute();
     setIsMuted(muted);
   }, []);
 
-  // Desktop keyboard support (WASD/Arrows to move, Space/J/Enter to attack, Shift/K to dash)
+  // Desktop keyboard support (WASD/Arrows to move, Space/J/Enter to attack, Shift/K to dash, H to heal, P to pause/resume)
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
+      if (e.code === 'KeyP') {
+        e.preventDefault();
+        soundManager.enableAudio();
+        if (isPausedRef.current) {
+          handleResume();
+        } else {
+          handlePause();
+        }
+        return;
+      }
+
+      if (e.code === 'Escape' && isPausedRef.current) {
+        e.preventDefault();
+        soundManager.enableAudio();
+        handleResume();
+        return;
+      }
+
+      if (isPausedRef.current) {
+        if (
+          e.code === 'Space' ||
+          e.code === 'ArrowUp' ||
+          e.code === 'ArrowDown' ||
+          e.code === 'ArrowLeft' ||
+          e.code === 'ArrowRight'
+        ) {
+          e.preventDefault();
+        }
+        return;
+      }
+
       keysRef.current[e.code] = true;
       if (e.code === 'Space' || e.code === 'KeyJ' || e.code === 'Enter') {
         e.preventDefault();
@@ -718,6 +1630,10 @@ export default function App() {
         e.preventDefault();
         soundManager.enableAudio();
         dashRequestedRef.current = true;
+      } else if (e.code === 'KeyH') {
+        e.preventDefault();
+        soundManager.enableAudio();
+        healRequestedRef.current = true;
       } else if (e.code === 'KeyR') {
         handleRestart();
       }
@@ -733,7 +1649,7 @@ export default function App() {
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
     };
-  }, [handleRestart]);
+  }, [handlePause, handleResume, handleRestart]);
 
   // Prevent iOS Safari pinch/gesture zoom & rubber-band scroll
   useEffect(() => {
@@ -757,10 +1673,10 @@ export default function App() {
           dpr={isSoftwareGl ? 1 : [1, 2]}
           shadows={!isSoftwareGl}
           camera={{
-            position: [8.5, 11.6, 12.1],
+            position: [8.5, 11.6, PLAYER_SPAWN[1] + 8.5],
             fov: 42,
             near: 0.5,
-            far: 80,
+            far: 120,
           }}
           gl={{
             antialias: !isSoftwareGl,
@@ -774,7 +1690,12 @@ export default function App() {
             keysRef={keysRef}
             attackRequestedRef={attackRequestedRef}
             dashRequestedRef={dashRequestedRef}
+            healRequestedRef={healRequestedRef}
+            characterXpRef={characterXpRef}
+            isPaused={isPaused}
+            isPausedRef={isPausedRef}
             resetCounter={resetCounter}
+            checkpointCounter={checkpointCounter}
             onHudSync={setHudState}
           />
         </Canvas>
@@ -784,17 +1705,51 @@ export default function App() {
 
       <GameHUD
         playerHp={hudState.playerHp}
-        playerMaxHp={PLAYER_MAX_HP}
-        enemyHp={hudState.enemyHp}
-        enemyMaxHp={ENEMY_MAX_HP}
-        enemyDefeated={hudState.enemyDefeated}
+        playerMaxHp={hudState.playerMaxHp}
+        playerMagic={hudState.playerMagic}
+        playerMaxMagic={hudState.playerMaxMagic}
+        healingPotions={hudState.healingPotions}
+        inCombat={hudState.inCombat}
+        isHealthRegenerating={hudState.isHealthRegenerating}
+        isMagicRegenerating={hudState.isMagicRegenerating}
+        playerXp={hudState.playerXp}
+        playerLevel={hudState.playerLevel}
+        playerPos={hudState.playerPos}
+        playerRot={hudState.playerRot}
+        currentRoom={hudState.currentRoom}
+        discoveredRooms={hudState.discoveredRooms}
+        enemies={hudState.enemies}
+        enemiesDefeated={hudState.enemiesDefeated}
+        totalEnemies={hudState.totalEnemies}
+        objectiveText={hudState.objectiveText}
+        hasKey={hudState.hasKey}
+        collectedPotionIds={hudState.collectedPotionIds}
+        doorUnlocked={hudState.doorUnlocked}
+        sanctumUnlocked={hudState.sanctumUnlocked}
+        wardenUnlocked={hudState.wardenUnlocked}
+        portalActive={hudState.portalActive}
+        showHealthRestored={hudState.showHealthRestored}
+        showPotionPickedUp={hudState.showPotionPickedUp}
+        showLevelUp={hudState.showLevelUp}
+        levelUpLevel={hudState.levelUpLevel}
+        checkpointRoom={hudState.checkpointRoom}
+        showCheckpointActivated={hudState.showCheckpointActivated}
+        activeEnemyName={hudState.activeEnemyName}
+        activeEnemyHp={hudState.activeEnemyHp}
+        activeEnemyMaxHp={hudState.activeEnemyMaxHp}
+        dungeonCompleted={hudState.dungeonCompleted}
         playerDefeated={hudState.playerDefeated}
         attackCooldownRatio={hudState.attackCooldownRatio}
         dashCooldownRatio={hudState.dashCooldownRatio}
         isMuted={isMuted}
+        isPaused={isPaused}
         onMove={handleMove}
         onAttack={handleAttack}
         onDash={handleDash}
+        onHeal={handleHeal}
+        onPause={handlePause}
+        onResume={handleResume}
+        onContinueFromCheckpoint={handleContinueFromCheckpoint}
         onRestart={handleRestart}
         onToggleMute={handleToggleMute}
         onInteract={handleInteract}

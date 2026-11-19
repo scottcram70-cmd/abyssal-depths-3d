@@ -5,8 +5,8 @@ import {defineConfig} from 'vite';
 
 export default defineConfig(() => {
   return {
+    base: "/abyssal-depths-3d/",
     plugins: [react(), tailwindcss()],
-    base: '/abyssal-depths-3d/',
     resolve: {
       alias: {
         '@': path.resolve(__dirname, '.'),

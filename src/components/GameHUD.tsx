@@ -17,6 +17,7 @@ import {
   Pause,
   Play,
   Coins,
+  ArrowLeftRight,
 } from 'lucide-react';
 import { VirtualJoystick } from './VirtualJoystick';
 import { DungeonMiniMap } from './DungeonMiniMap';
@@ -66,6 +67,7 @@ interface GameHUDProps {
   dashCooldownRatio: number; // 0 = ready, 1 = full cooldown
   isMuted: boolean;
   isPaused: boolean;
+  mirroredControls: boolean;
   onMove: (vec: Vector2D) => void;
   onAttack: () => void;
   onDash: () => void;
@@ -76,6 +78,7 @@ interface GameHUDProps {
   onContinueFromCheckpoint: () => void;
   onRestart: () => void;
   onToggleMute: () => void;
+  onToggleMirroredControls: () => void;
   onInteract: () => void;
 }
 
@@ -122,6 +125,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({
   dashCooldownRatio,
   isMuted,
   isPaused,
+  mirroredControls,
   onMove,
   onAttack,
   onDash,
@@ -132,6 +136,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({
   onContinueFromCheckpoint,
   onRestart,
   onToggleMute,
+  onToggleMirroredControls,
   onInteract,
 }) => {
   const [isMapOpen, setIsMapOpen] = useState(false);
@@ -685,6 +690,73 @@ export const GameHUD: React.FC<GameHUDProps> = ({
               </div>
             </div>
 
+            {/* Control Layout Toggle: LEFT JOYSTICK / RIGHT JOYSTICK */}
+            <div className="mt-3.5 rounded-xl border border-stone-800 bg-stone-900/80 p-2.5">
+              <div className="mb-2 flex items-center justify-center gap-1.5 text-[10px] font-bold uppercase tracking-widest text-stone-400">
+                <ArrowLeftRight className="h-3.5 w-3.5 text-amber-400" />
+                <span>Mobile Controls</span>
+              </div>
+              <div
+                role="group"
+                aria-label="Mobile Controls Layout"
+                className="grid grid-cols-2 gap-1.5"
+              >
+                <button
+                  type="button"
+                  aria-pressed={!mirroredControls}
+                  onPointerDown={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    onInteract();
+                    if (mirroredControls) onToggleMirroredControls();
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      onInteract();
+                      if (mirroredControls) onToggleMirroredControls();
+                    }
+                  }}
+                  style={{ touchAction: 'none' }}
+                  className={`rounded-lg border px-2 py-2 text-[11px] font-black uppercase tracking-wider transition active:scale-95 ${
+                    !mirroredControls
+                      ? 'border-amber-400/85 bg-amber-950/80 text-amber-200 shadow-[0_0_12px_rgba(245,158,11,0.22)]'
+                      : 'border-stone-700/80 bg-stone-950/75 text-stone-400 hover:border-stone-600 hover:text-stone-200'
+                  }`}
+                >
+                  Left Joystick
+                </button>
+
+                <button
+                  type="button"
+                  aria-pressed={mirroredControls}
+                  onPointerDown={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    onInteract();
+                    if (!mirroredControls) onToggleMirroredControls();
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      onInteract();
+                      if (!mirroredControls) onToggleMirroredControls();
+                    }
+                  }}
+                  style={{ touchAction: 'none' }}
+                  className={`rounded-lg border px-2 py-2 text-[11px] font-black uppercase tracking-wider transition active:scale-95 ${
+                    mirroredControls
+                      ? 'border-amber-400/85 bg-amber-950/80 text-amber-200 shadow-[0_0_12px_rgba(245,158,11,0.22)]'
+                      : 'border-stone-700/80 bg-stone-950/75 text-stone-400 hover:border-stone-600 hover:text-stone-200'
+                  }`}
+                >
+                  Right Joystick
+                </button>
+              </div>
+            </div>
+
             <button
               type="button"
               onPointerDown={(e) => {
@@ -702,7 +774,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({
                 }
               }}
               style={{ touchAction: 'none' }}
-              className="mt-5 inline-flex w-full items-center justify-center gap-2.5 rounded-xl border-2 border-amber-300/85 bg-gradient-to-b from-amber-500 to-amber-700 px-6 py-4 text-lg font-black uppercase tracking-wider text-stone-950 shadow-[0_0_24px_rgba(245,158,11,0.45)] active:scale-95 transition"
+              className="mt-4 inline-flex w-full items-center justify-center gap-2.5 rounded-xl border-2 border-amber-300/85 bg-gradient-to-b from-amber-500 to-amber-700 px-6 py-4 text-lg font-black uppercase tracking-wider text-stone-950 shadow-[0_0_24px_rgba(245,158,11,0.45)] active:scale-95 transition"
             >
               <Play className="h-5 w-5 fill-current" />
               Resume
@@ -805,19 +877,30 @@ export const GameHUD: React.FC<GameHUDProps> = ({
         </div>
       )}
 
-      {/* BOTTOM CONTROLS: Lower-Left Joystick & Lower-Right Action Cluster */}
-      <div className="flex items-end justify-between">
-        {/* Lower-Left Virtual Movement Joystick */}
+      {/* BOTTOM CONTROLS: Default (Joystick Left / Actions Right) or Mirrored (Actions Left / Joystick Right) */}
+      <div
+        data-controls-layout={mirroredControls ? 'mirrored' : 'default'}
+        className={`flex items-end justify-between ${
+          mirroredControls ? 'flex-row-reverse' : ''
+        }`}
+      >
+        {/* Virtual Movement Joystick */}
         <div className="pointer-events-auto">
           <VirtualJoystick onMove={onMove} onInteract={onInteract} disabled={isPaused} />
         </div>
 
-        {/* Lower-Right Action Cluster (Attack at bottom, Heal & Dash stacked cleanly to the left) */}
+        {/* Action Cluster (Attack on outer edge, Heal & Dash stacked cleanly inward) */}
         <div
-          className="pointer-events-auto relative flex items-end gap-2.5 sm:gap-3"
+          className={`pointer-events-auto relative flex items-end gap-2.5 sm:gap-3 ${
+            mirroredControls ? 'flex-row-reverse' : ''
+          }`}
           style={{ touchAction: 'none' }}
         >
-          <div className="mb-1 flex flex-col items-end gap-2">
+          <div
+            className={`mb-1 flex flex-col gap-2 ${
+              mirroredControls ? 'items-start' : 'items-end'
+            }`}
+          >
             <button
               type="button"
               onPointerDown={(e) => {

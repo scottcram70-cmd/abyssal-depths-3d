@@ -1,5 +1,6 @@
 import React, { useRef, useState } from 'react';
 import {
+  ArrowLeftRight,
   ChevronDown,
   ChevronUp,
   Compass,
@@ -24,6 +25,8 @@ interface TitleScreenProps {
   playerLevel: number;
   playerHp: number;
   playerMaxHp: number;
+  mirroredControls: boolean;
+  onSelectMirroredControls: (mirrored: boolean) => void;
   onEnterDungeon: () => void;
   onContinueRun: () => void;
   onInteract: () => void;
@@ -86,6 +89,8 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
   playerLevel,
   playerHp,
   playerMaxHp,
+  mirroredControls,
+  onSelectMirroredControls,
   onEnterDungeon,
   onContinueRun,
   onInteract,
@@ -187,8 +192,69 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
           survive the horrors within, and uncover the source of the corruption.
         </p>
 
+        {/* Controller Selection (shared with Pause menu preference) */}
+        <div className="mt-5 rounded-xl border border-stone-800/90 bg-stone-950/80 p-3">
+          <div className="mb-2 flex items-center justify-center gap-1.5 text-[11px] font-bold uppercase tracking-[0.2em] text-amber-300/90">
+            <ArrowLeftRight className="h-3.5 w-3.5 text-amber-400 shrink-0" />
+            <span>Controls</span>
+          </div>
+          <div
+            role="group"
+            aria-label="Controls"
+            className="grid grid-cols-2 gap-2"
+          >
+            <button
+              type="button"
+              aria-pressed={!mirroredControls}
+              onPointerDown={(e) => {
+                if (e.pointerType === 'touch') {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  runAction(() => onSelectMirroredControls(false), true);
+                }
+              }}
+              onClick={(e) => {
+                e.stopPropagation();
+                runAction(() => onSelectMirroredControls(false), false);
+              }}
+              style={{ touchAction: 'manipulation' }}
+              className={`flex min-h-[44px] items-center justify-center rounded-xl border px-3 py-2.5 text-xs font-black uppercase tracking-wider transition active:scale-[0.98] ${
+                !mirroredControls
+                  ? 'border-amber-400/90 bg-amber-950/80 text-amber-200 shadow-[0_0_16px_rgba(245,158,11,0.28)]'
+                  : 'border-stone-700/85 bg-stone-900/75 text-stone-400 hover:border-stone-600 hover:text-stone-200'
+              }`}
+            >
+              Left Joystick
+            </button>
+
+            <button
+              type="button"
+              aria-pressed={mirroredControls}
+              onPointerDown={(e) => {
+                if (e.pointerType === 'touch') {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  runAction(() => onSelectMirroredControls(true), true);
+                }
+              }}
+              onClick={(e) => {
+                e.stopPropagation();
+                runAction(() => onSelectMirroredControls(true), false);
+              }}
+              style={{ touchAction: 'manipulation' }}
+              className={`flex min-h-[44px] items-center justify-center rounded-xl border px-3 py-2.5 text-xs font-black uppercase tracking-wider transition active:scale-[0.98] ${
+                mirroredControls
+                  ? 'border-amber-400/90 bg-amber-950/80 text-amber-200 shadow-[0_0_16px_rgba(245,158,11,0.28)]'
+                  : 'border-stone-700/85 bg-stone-900/75 text-stone-400 hover:border-stone-600 hover:text-stone-200'
+              }`}
+            >
+              Right Joystick
+            </button>
+          </div>
+        </div>
+
         {/* Primary Action(s) */}
-        <div className="mt-5 flex flex-col gap-2.5">
+        <div className="mt-3.5 flex flex-col gap-2.5">
           {hasActiveRun && (
             <button
               type="button"

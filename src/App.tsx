@@ -45,6 +45,10 @@ import {
 } from './utils/progression';
 import { rollBarrelLoot, rollEnemyLoot } from './utils/loot';
 import {
+  loadMirroredControlsPreference,
+  saveMirroredControlsPreference,
+} from './utils/controlsPreference';
+import {
   EnemyRuntime,
   LootDropItem,
   MapEnemyPin,
@@ -1580,6 +1584,9 @@ export default function App() {
   const [resetCounter, setResetCounter] = useState(0);
   const [checkpointCounter, setCheckpointCounter] = useState(0);
   const [isMuted, setIsMuted] = useState(soundManager.getMuted());
+  const [mirroredControls, setMirroredControls] = useState<boolean>(() =>
+    loadMirroredControlsPreference()
+  );
   const [hasEnteredDungeon, setHasEnteredDungeon] = useState(false);
   const [hasActiveRun, setHasActiveRun] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
@@ -1741,6 +1748,19 @@ export default function App() {
     setIsMuted(muted);
   }, []);
 
+  const handleToggleMirroredControls = useCallback(() => {
+    setMirroredControls((prev) => {
+      const next = !prev;
+      saveMirroredControlsPreference(next);
+      return next;
+    });
+  }, []);
+
+  const handleSelectMirroredControls = useCallback((mirrored: boolean) => {
+    setMirroredControls(mirrored);
+    saveMirroredControlsPreference(mirrored);
+  }, []);
+
   // Desktop keyboard support (WASD/Arrows to move, Space/J/Enter to attack, Shift/K to dash, H to heal, P to pause/resume)
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -1870,6 +1890,8 @@ export default function App() {
           playerLevel={hudState.playerLevel}
           playerHp={hudState.playerHp}
           playerMaxHp={hudState.playerMaxHp}
+          mirroredControls={mirroredControls}
+          onSelectMirroredControls={handleSelectMirroredControls}
           onEnterDungeon={handleEnterDungeon}
           onContinueRun={handleContinueRun}
           onInteract={handleInteract}
@@ -1921,6 +1943,7 @@ export default function App() {
             dashCooldownRatio={hudState.dashCooldownRatio}
             isMuted={isMuted}
             isPaused={isPaused}
+            mirroredControls={mirroredControls}
             onMove={handleMove}
             onAttack={handleAttack}
             onDash={handleDash}
@@ -1931,6 +1954,7 @@ export default function App() {
             onContinueFromCheckpoint={handleContinueFromCheckpoint}
             onRestart={handleRestart}
             onToggleMute={handleToggleMute}
+            onToggleMirroredControls={handleToggleMirroredControls}
             onInteract={handleInteract}
           />
         </>
